@@ -34,6 +34,8 @@ class MLP(nn.Sequential):
         activation: str = "elu",
         last_activation: str | None = None,
         layer_norm: Literal["pre_activation", "post_activation"] | None = None,
+        first_non_muon: bool = False,
+        last_non_muon: bool = False,
     ) -> None:
         """Initialize the MLP.
 
@@ -46,6 +48,9 @@ class MLP(nn.Sequential):
             last_activation: Activation function of the last layer. None results in a linear last layer.
             layer_norm: Position of LayerNorm relative to the activation function in each hidden layer. None disables
                 LayerNorm.
+            first_non_muon: If True, keep the input linear layer on AdamW when ``use_muon=True``.
+            last_non_muon: If True, keep the output linear layer on AdamW when ``use_muon=True``.
+                Muon is intended for hidden 2-D weights; input/output heads are usually excluded.
 
         Raises:
             ValueError: If ``layer_norm`` is not None, ``"pre_activation"``, or ``"post_activation"``.
@@ -98,6 +103,13 @@ class MLP(nn.Sequential):
         # Register the layers
         for idx, layer in enumerate(layers):
             self.add_module(f"{idx}", layer)
+
+        # MuonAdamWWrapper reads ``_non_muon`` to route 2-D weights away from Muon.
+        linear_layers = [layer for layer in layers if isinstance(layer, nn.Linear)]
+        if first_non_muon and len(linear_layers) > 0:
+            linear_layers[0].weight._non_muon = True
+        if last_non_muon and len(linear_layers) > 0:
+            linear_layers[-1].weight._non_muon = True
 
     def init_weights(self, scales: float | tuple[float, ...]) -> None:
         """Initialize the weights of the MLP.

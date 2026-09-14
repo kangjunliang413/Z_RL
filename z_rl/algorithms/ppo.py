@@ -18,6 +18,7 @@ from z_rl.extensions import Symmetry, resolve_symmetry_config
 from z_rl.models import MLPModel
 from z_rl.storage import RolloutStorage
 from z_rl.utils import compile_model, inject_obs_time_slice_map, resolve_callable, resolve_obs_groups, resolve_optimizer
+from z_rl.utils.opt import MuonAdamWWrapper
 
 
 class PPO:
@@ -48,6 +49,7 @@ class PPO:
         learning_rate: float = 0.001,
         max_grad_norm: float = 1.0,
         optimizer: str = "adam",
+        use_muon: bool = False,  # Muon for hidden 2-D weights; AdamW for biases/heads/std (see utils.opt)
         use_clipped_value_loss: bool = True,
         schedule: str = "adaptive",
         desired_kl: float = 0.01,
@@ -95,10 +97,14 @@ class PPO:
         self._raw_actor = self.actor
         self._raw_critic = self.critic
 
-        # Create the optimizer
-        self.optimizer = resolve_optimizer(optimizer)(
-            chain(self.actor.parameters(), self.critic.parameters()), lr=learning_rate
-        )  # type: ignore
+        # Create the optimizer. Muon is not a full-model optimizer: hidden 2-D weights use Muon,
+        # while biases, std parameters, and input/output layers stay on AdamW via MuonAdamWWrapper.
+        if use_muon:
+            self.optimizer = MuonAdamWWrapper([self.actor, self.critic], lr=learning_rate)
+        else:
+            self.optimizer = resolve_optimizer(optimizer)(
+                chain(self.actor.parameters(), self.critic.parameters()), lr=learning_rate
+            )  # type: ignore
 
         # Add storage
         self.storage = storage

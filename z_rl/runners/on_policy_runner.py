@@ -15,6 +15,7 @@ from z_rl.env import VecEnv
 from z_rl.models import MLPModel
 from z_rl.utils import check_nan, resolve_callable
 from z_rl.utils.logger import Logger
+from z_rl.utils.onnx_export import export_to_onnx
 
 
 class OnPolicyRunner:
@@ -180,7 +181,7 @@ class OnPolicyRunner:
         save_path = os.path.join(path, filename)
 
         # Trace and save the model
-        torch.onnx.export(
+        export_to_onnx(
             onnx_model,
             onnx_model.get_dummy_inputs(),  # type: ignore
             save_path,

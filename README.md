@@ -23,7 +23,32 @@ It is recommended to use a virtual environment (`venv`, `conda`, or `uv`) and ac
 git clone https://github.com/syw-robotics/z_rl
 cd z_rl
 python -m pip install -e .
+
+# [optional] update torch version to support muon optimizer
+python -m pip install -e ".[muon]" 
 ```
+
+<!-- ### Muon optimizer (optional) -->
+<!--  -->
+<!-- PPO supports an optional `use_muon` flag. When enabled, hidden 2-D weight matrices are optimized with -->
+<!-- [`torch.optim.Muon`](https://pytorch.org/docs/stable/generated/torch.optim.Muon.html); biases, normalization -->
+<!-- parameters, policy std heads, and input/output linear layers stay on AdamW. This requires PyTorch 2.9+. -->
+<!--  -->
+<!-- Install the optional extra (or ensure your environment already satisfies `torch>=2.9`): -->
+<!--  -->
+<!-- ```bash -->
+<!-- python -m pip install -e ".[muon]" -->
+<!-- ``` -->
+<!--  -->
+<!-- Enable it in your algorithm config: -->
+<!--  -->
+<!-- ```python -->
+<!-- train_cfg["algorithm"]["use_muon"] = True -->
+<!-- ``` -->
+<!--  -->
+<!-- For Isaac Lab configs, set `use_muon=True` on `ZRlPpoAlgorithmCfg`. When `use_muon` is enabled, the `optimizer` -->
+<!-- field is ignored. Optimizer state in checkpoints is not compatible with plain Adam/AdamW runs, so resume training -->
+<!-- with `load_cfg["optimizer"]=False` when switching optimizer modes. -->
 
 ## 🚀 Usage
 

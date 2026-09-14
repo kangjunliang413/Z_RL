@@ -36,6 +36,11 @@ dependencies = [
     "gradio"
 ]
 
+[project.optional-dependencies]
+muon = [
+    "torch>=2.9",
+]
+
 [project.urls]
 Homepage = "https://github.com/syw-robotics/z_rl"
 Issues = "https://github.com/syw-robotics/z_rl/issues"

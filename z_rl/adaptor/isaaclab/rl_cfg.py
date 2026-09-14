@@ -303,6 +303,14 @@ class ZRlPpoAlgorithmCfg:
     optimizer: Literal["adam", "adamw", "sgd", "rmsprop"] = "adam"
     """The optimizer to use. Defaults to adam."""
 
+    use_muon: bool = False
+    """Whether to use Muon+AdamW instead of a single optimizer. Defaults to False.
+
+    Muon is intended for hidden 2-D weight matrices only. Biases, normalization parameters,
+    policy std heads, and input/output linear layers remain on AdamW. Requires a PyTorch build
+    that provides ``torch.optim.Muon`` (approximately 2.9+). When enabled, ``optimizer`` is ignored.
+    """
+
     value_loss_coef: float = MISSING
     """The coefficient for the value loss."""
 

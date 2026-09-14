@@ -215,7 +215,8 @@ class MLPModel(nn.Module):
         self, input_dim: int, output_dim: int | list[int], hidden_dims: tuple[int, ...] | list[int], activation: str
     ) -> nn.Module:
         """Build the output head that consumes the model latent."""
-        return MLP(input_dim, output_dim, hidden_dims, activation)
+        # When use_muon=True, hidden layers use Muon; input/output linear layers stay on AdamW.
+        return MLP(input_dim, output_dim, hidden_dims, activation, first_non_muon=True, last_non_muon=True)
 
     def init_head_weights(self) -> None:
         """Initialize distribution-specific head weights after head construction."""
