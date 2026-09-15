@@ -13,7 +13,7 @@ from tensordict import TensorDict
 
 from z_rl.modules import MLP, EmpiricalNormalization, HiddenState
 from z_rl.modules.distribution import Distribution
-from z_rl.utils import ObsSelector, resolve_callable, unpad_trajectories
+from z_rl.utils import ObsSelector, resolve_class, unpad_trajectories
 
 # IsaacLab normalization config classes become dictionaries before reaching core models; booleans preserve the
 # concise disabled/default-normalizer interface.
@@ -198,9 +198,8 @@ class MLPModel(nn.Module):
         if distribution_cfg is None:
             return None, output_dim
 
-        dist_cfg = dict(distribution_cfg)
-        dist_class: type[Distribution] = resolve_callable(dist_cfg.pop("class_name"))  # type: ignore
-        distribution = dist_class(output_dim, **dist_cfg)
+        dist_class, dist_cfg = resolve_class(distribution_cfg)
+        distribution: Distribution = dist_class(output_dim, **dist_cfg)  # type: ignore[assignment]
         return distribution, distribution.input_dim
 
     def build_latent_adapter(self) -> nn.Module:

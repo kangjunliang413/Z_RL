@@ -49,13 +49,15 @@ obs -> actor/critic inference -> rollout storage -> GAE returns -> minibatch los
 Main responsibilities of `PPO`:
 
 - samples actions with the actor and records log-probabilities and value estimates
-- updates observation normalizers during rollout collection
 - bootstraps rewards on `time_outs` for infinite-horizon environments
 - computes GAE-style returns and advantages
 - runs clipped PPO surrogate updates over feedforward or recurrent minibatches
+- updates observation normalizers once per learning iteration after the optimizer step, using stored rollout observations
+- optionally runs the forward pass and loss computation in bfloat16 mixed precision
 - optionally adapts the learning rate based on KL divergence
 - optionally integrates symmetry augmentation / mirror loss through `symmetry_cfg`
 - supports multi-GPU gradient averaging through `reduce_parameters()`
+- keeps `class_name` and other constructor keys in the original training config so loggers can record them
 
 ## Distillation
 
@@ -73,11 +75,14 @@ obs -> student action + teacher action -> storage -> behavior loss -> gradient a
 Main responsibilities of `Distillation`:
 
 - records student actions and teacher target actions during rollout collection
-- updates only the student normalizer and student parameters
+- updates only the student normalizer (once per learning iteration after the optimizer step) and student parameters
 - skips return computation because it is not an RL objective
 - supports gradient accumulation via `gradient_length`
+- warns when `num_learning_epochs * num_steps_per_env` is not divisible by `gradient_length`
+- optionally runs the forward pass and loss computation in bfloat16 mixed precision
 - supports either `mse` or `huber` behavior loss
 - supports multi-GPU gradient averaging for the student model
+- keeps `class_name` and other constructor keys in the original training config so loggers can record them
 
 One important loading behavior:
 

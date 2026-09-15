@@ -152,3 +152,23 @@ class TestResolveCallableErrors:
         """Should raise TypeError for list input."""
         with pytest.raises(TypeError, match="Expected callable or string"):
             resolve_callable(["PPO"])  # type: ignore
+
+
+class TestResolveClass:
+    """Tests for resolve_class config copying."""
+
+    def test_resolve_class_does_not_mutate_original_cfg(self) -> None:
+        """The original config should keep class_name after resolution."""
+        from z_rl.utils import resolve_class
+        from z_rl.algorithms import PPO
+
+        cfg = {"class_name": "PPO", "learning_rate": 1e-3, "nested": {"std_type": "scalar"}}
+        resolved, class_cfg = resolve_class(cfg)
+
+        assert resolved is PPO
+        assert "class_name" not in class_cfg
+        assert class_cfg["learning_rate"] == 1e-3
+        assert cfg["class_name"] == "PPO"
+        assert cfg["nested"]["std_type"] == "scalar"
+        class_cfg["nested"]["std_type"] = "log"
+        assert cfg["nested"]["std_type"] == "scalar"

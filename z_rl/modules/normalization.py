@@ -17,6 +17,9 @@ class EmpiricalNormalization(nn.Module):
 
     Statistics keep the batch axis and may use singleton feature dimensions, allowing values such as ``(C, 1, 1)``
     to normalize inputs shaped ``(..., C, H, W)``.
+
+    PPO and Distillation call :meth:`update` once per learning iteration on the flattened rollout, so ``decay``
+    applies per iteration rather than per environment step.
     """
 
     def __init__(
@@ -79,13 +82,25 @@ class EmpiricalNormalization(nn.Module):
         reduction_dims = (0, *self._reduction_dims)
         batch_mean = x.mean(dim=reduction_dims, keepdim=True)
         batch_var = x.var(dim=reduction_dims, unbiased=False, keepdim=True)
-        batch_count = x.shape[0]
+        local_count = x.shape[0]
+        batch_count = torch.tensor(local_count, dtype=self.count.dtype, device=self.count.device)
+
+        if torch.distributed.is_initialized():
+            # Compute the global mean first, then combine the local variances around that mean.
+            local_mean = batch_mean
+            torch.distributed.all_reduce(batch_count)
+            mean_sum = batch_mean * local_count
+            torch.distributed.all_reduce(mean_sum)
+            batch_mean = mean_sum / batch_count
+            var_sum = local_count * (batch_var + (local_mean - batch_mean).square())
+            torch.distributed.all_reduce(var_sum)
+            batch_var = var_sum / batch_count
 
         # Decay the effective history before merging the new batch. With decay=1 this is the exact cumulative update.
         history_count = self._ema_count * self.decay
-        effective_count = history_count + batch_count
+        effective_count = history_count + batch_count.to(dtype=self._ema_count.dtype)
         history_weight = history_count / effective_count
-        batch_weight = batch_count / effective_count
+        batch_weight = batch_count.to(dtype=self._ema_count.dtype) / effective_count
         mean = history_weight * self._mean + batch_weight * batch_mean
 
         # Parallel variance merge includes the shift of each population mean relative to the merged mean.

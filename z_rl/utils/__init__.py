@@ -15,10 +15,12 @@ from .utils import (
     get_param,
     check_nan,
     compile_model,
+    reduce_gradients_in_buckets,
     split_and_pad_trajectories,
     unpad_trajectories,
     resolve_nn_activation,
     resolve_optimizer,
+    resolve_class,
     resolve_callable,
 )
 
@@ -47,9 +49,11 @@ __all__ = [
     "get_param",
     "check_nan",
     "compile_model",
+    "reduce_gradients_in_buckets",
     "split_and_pad_trajectories",
     "unpad_trajectories",
     "resolve_nn_activation",
     "resolve_optimizer",
+    "resolve_class",
     "resolve_callable",
 ]

@@ -17,7 +17,7 @@ from collections import deque
 
 import z_rl
 from z_rl.utils.log_writer import LogWriter
-from z_rl.utils.utils import resolve_callable
+from z_rl.utils.utils import resolve_callable, resolve_class
 
 
 class Logger:
@@ -61,9 +61,8 @@ class Logger:
     def init_logging_writer(self) -> None:
         """Initialize the logging writer and save the code state."""
         if self.log_dir is not None and not self.disable_logs:
-            logger_cfg_raw = self.cfg.get("logger", "tensorboard")
-            logger_cfg = dict(logger_cfg_raw) if isinstance(logger_cfg_raw, dict) else logger_cfg_raw
-            self.logger_type = logger_cfg.pop("class_name") if isinstance(logger_cfg, dict) else logger_cfg.lower()
+            logger_cfg = self.cfg.get("logger", "tensorboard")
+            self.logger_type = logger_cfg["class_name"] if isinstance(logger_cfg, dict) else logger_cfg.lower()
 
             if self.logger_type == "neptune":
                 warnings.warn(
@@ -91,11 +90,13 @@ class Logger:
                 from torch.utils.tensorboard import SummaryWriter
 
                 self.writer = SummaryWriter(log_dir=self.log_dir, flush_secs=10)
+            elif isinstance(logger_cfg, dict):
+                writer_class, writer_cfg = resolve_class(logger_cfg)
+                self.writer = writer_class(log_dir=self.log_dir, **writer_cfg)  # type: ignore[arg-type]
             else:
                 assert self.logger_type is not None
                 writer_class = resolve_callable(self.logger_type)
-                writer_kwargs = logger_cfg if isinstance(logger_cfg, dict) else {}
-                self.writer = writer_class(log_dir=self.log_dir, **writer_kwargs)  # type: ignore[arg-type]
+                self.writer = writer_class(log_dir=self.log_dir)  # type: ignore[arg-type]
         else:
             self.writer = None
 

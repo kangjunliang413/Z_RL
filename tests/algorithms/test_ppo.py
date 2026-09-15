@@ -49,6 +49,8 @@ class _StaticBatchStorage:
         self.batch = batch
         self.num_batches = num_batches
         self.clear_calls = 0
+        # PPO.update() refreshes normalizers from stored rollouts after optimization.
+        self.observations = batch.observations.unsqueeze(0)
 
     def mini_batch_generator(self, num_mini_batches: int, num_epochs: int) -> Iterator[object]:
         assert num_mini_batches * num_epochs == self.num_batches
@@ -424,3 +426,85 @@ class TestAdaptiveLearningRate:
             ppo.learning_rate = min(1e-2, ppo.learning_rate * 1.5)
 
         assert ppo.learning_rate == initial_lr
+
+
+class TestNormalizationUpdates:
+    """Tests for observation-normalization update timing."""
+
+    def test_normalization_uses_rollout_after_policy_update(self) -> None:
+        """Normalization statistics should stay fixed during a rollout and update from stored observations."""
+        obs = make_obs(NUM_ENVS, OBS_DIM)
+        obs_groups = {"actor": ["policy"], "critic": ["policy"]}
+        actor = _make_actor(obs, obs_groups, NUM_ACTIONS, obs_normalization=True)
+        critic = _make_critic(obs, obs_groups, obs_normalization=True)
+        storage = RolloutStorage("rl", NUM_ENVS, NUM_STEPS, obs, [NUM_ACTIONS])
+        ppo = PPO(actor, critic, storage, num_learning_epochs=1, num_mini_batches=1, schedule="fixed")
+
+        for step in range(NUM_STEPS):
+            rollout_obs = TensorDict(
+                {"policy": torch.full((NUM_ENVS, OBS_DIM), float(step + 1))}, batch_size=[NUM_ENVS]
+            )
+            next_obs = TensorDict({"policy": torch.full((NUM_ENVS, OBS_DIM), float(step + 2))}, batch_size=[NUM_ENVS])
+            ppo.act(rollout_obs)
+            ppo.process_env_step(next_obs, torch.ones(NUM_ENVS), torch.zeros(NUM_ENVS), {})
+
+        assert actor.obs_normalizer.count == 0
+        assert critic.obs_normalizer.count == 0
+
+        actor(storage.observations[0], stochastic_output=True)
+        current_log_prob = actor.get_output_log_prob(storage.actions[0])
+        ratio = torch.exp(current_log_prob - storage.actions_log_prob[0].squeeze(-1))
+        assert torch.allclose(ratio, torch.ones_like(ratio), atol=1e-6)
+
+        expected_mean = storage.observations["policy"].flatten(0, 1).mean(dim=0)
+        ppo.compute_returns(next_obs)
+        ppo.update()
+
+        expected_count = NUM_ENVS * NUM_STEPS
+        assert actor.obs_normalizer.count == expected_count
+        assert critic.obs_normalizer.count == expected_count
+        assert torch.allclose(actor.obs_normalizer.mean, expected_mean)
+        assert torch.allclose(critic.obs_normalizer.mean, expected_mean)
+
+
+class TestMixedPrecision:
+    """Tests for the use_mixed_precision flag."""
+
+    def test_flag_defaults_to_false(self) -> None:
+        """Mixed precision must be opt-in."""
+        ppo, _obs = _build_ppo()
+        assert ppo.use_mixed_precision is False
+
+    def test_update_runs_with_mixed_precision(self) -> None:
+        """update() with the flag on returns finite losses and changes parameters."""
+        ppo, obs = _build_ppo(use_mixed_precision=True, schedule="fixed")
+        ppo.train_mode()
+        for _ in range(NUM_STEPS):
+            ppo.act(obs)
+            ppo.process_env_step(obs, torch.randn(NUM_ENVS), torch.zeros(NUM_ENVS), {})
+        ppo.compute_returns(obs)
+
+        before = [p.clone() for p in ppo.actor.parameters()]
+        loss_dict = ppo.update()
+
+        assert all(torch.isfinite(torch.as_tensor(v)) for v in loss_dict.values())
+        after = list(ppo.actor.parameters())
+        assert any(not torch.equal(b, a) for b, a in zip(before, after)), "actor params should change"
+
+
+class TestLoadRestoresLearningRate:
+    """Tests for restoring the adaptive learning rate from the optimizer state."""
+
+    def test_load_copies_optimizer_lr_into_algorithm(self) -> None:
+        """Resume should keep the optimizer learning rate instead of the constructor default."""
+        ppo, _obs = _build_ppo(schedule="adaptive", learning_rate=1e-3)
+        resumed_lr = 2e-4
+        ppo.learning_rate = resumed_lr
+        for param_group in ppo.optimizer.param_groups:
+            param_group["lr"] = resumed_lr
+
+        restored, _obs = _build_ppo(schedule="adaptive", learning_rate=1e-3)
+        restored.load(ppo.save(), None, True)
+
+        assert restored.learning_rate == resumed_lr
+        assert restored.optimizer.param_groups[0]["lr"] == resumed_lr

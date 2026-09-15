@@ -148,6 +148,14 @@ class TestRunnerConstruction:
         runner = _build_runner()
         assert runner.current_learning_iteration == 0
 
+    def test_construct_keeps_class_names_on_original_cfg(self) -> None:
+        """Algorithm construction should not pop class_name from the runner config used for logging."""
+        runner = _build_runner()
+        assert runner.cfg["algorithm"]["class_name"] == "PPO"
+        assert runner.cfg["actor"]["class_name"] == "MLPModel"
+        assert runner.cfg["critic"]["class_name"] == "MLPModel"
+        assert runner.cfg["actor"]["distribution_cfg"]["class_name"] == "GaussianDistribution"
+
 
 class TestLearnLoop:
     """Tests that the learn loop runs and updates parameters."""

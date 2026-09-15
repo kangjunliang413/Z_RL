@@ -330,6 +330,18 @@ class ZRlPpoAlgorithmCfg:
     share_cnn_encoders: bool = False
     """Whether to share the CNN networks between actor and critic, in case CNNModels are used. Defaults to False."""
 
+    use_mixed_precision: bool = False
+    """Whether to run the forward pass and loss computation in bfloat16 autocast. Defaults to False.
+
+    Backward, gradient clipping, and the optimizer step always stay in fp32.
+    """
+
+    grad_reduce_bucket_mb: float = 25.0
+    """Maximum size, in megabytes, of a packed gradient buffer during multi-GPU reduction. Defaults to 25.
+
+    Matches ``torch.nn.parallel.DistributedDataParallel``'s default ``bucket_cap_mb``.
+    """
+
     symmetry_augmentation: bool = False
     """Whether to append mirrored samples to each rollout mini-batch. Defaults to False.
 

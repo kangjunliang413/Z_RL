@@ -108,6 +108,37 @@ class TestEmpiricalNormalization:
         assert torch.allclose(norm._ema_count, torch.tensor(3.0))
         assert torch.allclose(norm._var.squeeze(0), torch.tensor([209.0 / 9.0]))
 
+    def test_distributed_update_combines_mean_and_variance(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Distributed updates should match moments computed from samples on all ranks."""
+        norm = EmpiricalNormalization(shape=1)
+        local_data = torch.tensor([[0.0], [2.0]])
+        remote_data = torch.tensor([[10.0], [14.0], [18.0]])
+        expected = torch.cat((local_data, remote_data))
+        call_count = 0
+
+        def fake_all_reduce(value: torch.Tensor) -> None:
+            nonlocal call_count
+            if call_count == 0:
+                value += remote_data.shape[0]
+            elif call_count == 1:
+                value += remote_data.sum(dim=0, keepdim=True)
+            else:
+                global_mean = expected.mean(dim=0, keepdim=True)
+                remote_var = remote_data.var(dim=0, unbiased=False, keepdim=True)
+                remote_mean = remote_data.mean(dim=0, keepdim=True)
+                value += remote_data.shape[0] * (remote_var + (remote_mean - global_mean).square())
+            call_count += 1
+
+        monkeypatch.setattr(torch.distributed, "is_initialized", lambda: True)
+        monkeypatch.setattr(torch.distributed, "all_reduce", fake_all_reduce)
+
+        norm.update(local_data)
+
+        assert call_count == 3
+        assert norm.count == expected.shape[0]
+        assert torch.allclose(norm.mean, expected.mean(dim=0))
+        assert torch.allclose(norm.std, expected.std(dim=0, unbiased=False))
+
     def test_broadcast_stats_shape_shares_reduced_dimensions(self) -> None:
         """Singleton statistics dimensions should pool values and broadcast during normalization."""
         norm = EmpiricalNormalization(shape=(2, 3), stats_shape=(2, 1), eps=0.0)

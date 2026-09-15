@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import copy
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -17,7 +18,15 @@ from z_rl.env import VecEnv
 from z_rl.extensions import Symmetry, resolve_symmetry_config
 from z_rl.models import MLPModel
 from z_rl.storage import RolloutStorage
-from z_rl.utils import compile_model, inject_obs_time_slice_map, resolve_callable, resolve_obs_groups, resolve_optimizer
+from z_rl.utils import (
+    compile_model,
+    inject_obs_time_slice_map,
+    reduce_gradients_in_buckets,
+    resolve_callable,
+    resolve_class,
+    resolve_obs_groups,
+    resolve_optimizer,
+)
 from z_rl.utils.opt import MuonAdamWWrapper
 
 
@@ -54,12 +63,14 @@ class PPO:
         schedule: str = "adaptive",
         desired_kl: float = 0.01,
         normalize_advantage_per_mini_batch: bool = False,
+        use_mixed_precision: bool = False,
         device: str = "cpu",
         # Symmetry parameters
         symmetry_augmentation: bool = False,
         symmetry_cfg: dict | None = None,
         # Distributed training parameters
         multi_gpu_cfg: dict | None = None,
+        grad_reduce_bucket_mb: float = 25,
     ) -> None:
         """Initialize the algorithm with models, storage, and optimization settings."""
         # Device-related parameters
@@ -73,6 +84,7 @@ class PPO:
         else:
             self.gpu_global_rank = 0
             self.gpu_world_size = 1
+        self.grad_reduce_bucket_mb = grad_reduce_bucket_mb
 
         # Symmetry extension
         if symmetry_augmentation and symmetry_cfg is None:
@@ -124,6 +136,7 @@ class PPO:
         self.schedule = schedule
         self.learning_rate = learning_rate
         self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
+        self.use_mixed_precision = use_mixed_precision
         self.actor_forward_context = None
         self._update_iteration = 0
 
@@ -143,11 +156,7 @@ class PPO:
     def process_env_step(
         self, obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor, extras: dict[str, torch.Tensor]
     ) -> None:
-        """Record one environment step and update the normalizers."""
-        # Update the normalizers
-        self.actor.update_normalization(obs)
-        self.critic.update_normalization(obs)
-
+        """Record one environment step."""
         # Record the rewards and dones
         # Note: We clone here because later on we bootstrap the rewards based on timeouts
         self.transition.rewards = rewards.clone()
@@ -209,7 +218,11 @@ class PPO:
         # Iterate over batches
         for minibatch in generator:
             original_batch_size = minibatch.observations.batch_size[0]
-            opt_losses, non_opt_losses = self.compute_loss(minibatch)
+            # Optionally use mixed precision for the forward pass and loss computation
+            with torch.amp.autocast(  # type: ignore
+                device_type=torch.device(self.device).type, enabled=self.use_mixed_precision, dtype=torch.bfloat16
+            ):
+                opt_losses, non_opt_losses = self.compute_loss(minibatch)
 
             # Detached diagnostics are opt-in and evaluated on one mini-batch per selected PPO update.
             if log_mirror_loss:
@@ -234,6 +247,11 @@ class PPO:
             mean_losses[k] = mean_losses[k] / num_updates
         if mirror_loss_metric is not None:
             mean_losses["mirror_loss_detach"] = mirror_loss_metric
+
+        # Update the normalizers from the collected rollout after optimization
+        obs = self.storage.observations.flatten(0, 1)
+        self.actor.update_normalization(obs)
+        self.critic.update_normalization(obs)
 
         # Clear the storage
         self.storage.clear()
@@ -389,6 +407,7 @@ class PPO:
             self._raw_critic.load_state_dict(loaded_dict["critic_state_dict"], strict=strict)
         if load_cfg.get("optimizer"):
             self.optimizer.load_state_dict(loaded_dict["optimizer_state_dict"])
+            self.learning_rate = self.optimizer.param_groups[0]["lr"]
         return load_cfg.get("iteration", False)
 
     def get_policy(self) -> MLPModel:
@@ -409,37 +428,38 @@ class PPO:
     @classmethod
     def construct_algorithm(cls, obs: TensorDict, env: VecEnv, cfg: dict, device: str) -> PPO:
         """Construct the PPO algorithm."""
-        # Resolve class callables
+        # Resolve class callables without mutating the original config (keeps class names for logging).
         alg_class: type[PPO] = cls
-        class_name = cfg["algorithm"].pop("class_name", None)
+        alg_cfg = copy.deepcopy(cfg["algorithm"])
+        class_name = alg_cfg.pop("class_name", None)
         if cls is PPO and class_name is not None:
             alg_class = resolve_callable(class_name)  # type: ignore
-        actor_class: type[MLPModel] = resolve_callable(cfg["actor"].pop("class_name"))  # type: ignore
-        critic_class: type[MLPModel] = resolve_callable(cfg["critic"].pop("class_name"))  # type: ignore
+        actor_class, actor_cfg = resolve_class(cfg["actor"])
+        critic_class, critic_cfg = resolve_class(cfg["critic"])
 
         # Resolve observation groups
         default_sets = ["actor", "critic"]
         cfg["obs_groups"] = resolve_obs_groups(obs, cfg["obs_groups"], default_sets)
 
         # Resolve symmetry config if used
-        cfg["algorithm"] = resolve_symmetry_config(cfg["algorithm"], env)
+        alg_cfg = resolve_symmetry_config(alg_cfg, env)
 
         # Inject wrapper-provided time-slice metadata for models that can consume it.
-        inject_obs_time_slice_map(cfg["actor"], actor_class, env)
-        inject_obs_time_slice_map(cfg["critic"], critic_class, env)
+        inject_obs_time_slice_map(actor_cfg, actor_class, env)
+        inject_obs_time_slice_map(critic_cfg, critic_class, env)
 
         # Pop init_weights configs before creating models (they are not model __init__ args)
-        actor_init_weights = cfg["actor"].pop("init_weights", None)
-        actor_cnn_init_weights = cfg["actor"].pop("cnn_init_weights", None)
-        critic_init_weights = cfg["critic"].pop("init_weights", None)
-        critic_cnn_init_weights = cfg["critic"].pop("cnn_init_weights", None)
+        actor_init_weights = actor_cfg.pop("init_weights", None)
+        actor_cnn_init_weights = actor_cfg.pop("cnn_init_weights", None)
+        critic_init_weights = critic_cfg.pop("init_weights", None)
+        critic_cnn_init_weights = critic_cfg.pop("cnn_init_weights", None)
 
         # Initialize the policy
-        actor: MLPModel = actor_class(obs, cfg["obs_groups"], "actor", env.num_actions, **cfg["actor"]).to(device)
+        actor: MLPModel = actor_class(obs, cfg["obs_groups"], "actor", env.num_actions, **actor_cfg).to(device)
         print(f"Actor Model: {actor}")
-        if cfg["algorithm"].pop("share_cnn_encoders", None):  # Share CNN encoders between actor and critic
-            cfg["critic"]["cnns"] = actor.cnns  # type: ignore
-        critic: MLPModel = critic_class(obs, cfg["obs_groups"], "critic", 1, **cfg["critic"]).to(device)
+        if alg_cfg.pop("share_cnn_encoders", None):  # Share CNN encoders between actor and critic
+            critic_cfg["cnns"] = actor.cnns  # type: ignore
+        critic: MLPModel = critic_class(obs, cfg["obs_groups"], "critic", 1, **critic_cfg).to(device)
         print(f"Critic Model: {critic}")
 
         # Initialize weights if configured
@@ -462,7 +482,7 @@ class PPO:
         # Initialize the storage
         storage = RolloutStorage("rl", env.num_envs, cfg["num_steps_per_env"], obs, [env.num_actions], device)
 
-        extra_kwargs = alg_class._build_algorithm_extra_kwargs(env, cfg["algorithm"])
+        extra_kwargs = alg_class._build_algorithm_extra_kwargs(env, alg_cfg)
 
         # Initialize the algorithm
         alg: PPO = alg_class(
@@ -470,7 +490,7 @@ class PPO:
             critic,
             storage,
             device=device,
-            **cfg["algorithm"],
+            **alg_cfg,
             **extra_kwargs,
             multi_gpu_cfg=cfg["multi_gpu"],
         )
@@ -480,33 +500,14 @@ class PPO:
 
     def broadcast_parameters(self) -> None:
         """Broadcast model parameters to all GPUs."""
-        # Obtain the model parameters on current GPU
-        model_params = [self._raw_actor.state_dict(), self._raw_critic.state_dict()]
-        # Broadcast the model parameters
-        torch.distributed.broadcast_object_list(model_params, src=0)
-        # Load the model parameters on all GPUs from source GPU
-        self._raw_actor.load_state_dict(model_params[0])
-        self._raw_critic.load_state_dict(model_params[1])
+        for model in (self._raw_actor, self._raw_critic):
+            for tensor in model.state_dict().values():
+                torch.distributed.broadcast(tensor, src=0)
 
     def reduce_parameters(self) -> None:
         """Collect gradients from all GPUs and average them.
 
         This function is called after the backward pass to synchronize the gradients across all GPUs.
         """
-        # Create a tensor to store the gradients
-        all_params = chain(self.actor.parameters(), self.critic.parameters())
-        all_params = list(all_params)
-        grads = [param.grad.view(-1) for param in all_params if param.grad is not None]
-        all_grads = torch.cat(grads)
-        # Average the gradients across all GPUs
-        torch.distributed.all_reduce(all_grads, op=torch.distributed.ReduceOp.SUM)
-        all_grads /= self.gpu_world_size
-        # Update the gradients for all parameters with the reduced gradients
-        offset = 0
-        for param in all_params:
-            if param.grad is not None:
-                numel = param.numel()
-                # Copy data back from shared buffer
-                param.grad.data.copy_(all_grads[offset : offset + numel].view_as(param.grad.data))
-                # Update the offset for the next parameter
-                offset += numel
+        params = chain(self.actor.parameters(), self.critic.parameters())
+        reduce_gradients_in_buckets(params, self.gpu_world_size, self.grad_reduce_bucket_mb)

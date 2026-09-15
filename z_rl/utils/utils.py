@@ -6,11 +6,13 @@
 
 from __future__ import annotations
 
+import copy
 import importlib
 import inspect
 import pkgutil
 import torch
 import warnings
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from tensordict import TensorDict
 from typing import Any, Callable
@@ -277,6 +279,57 @@ def compile_model(model: torch.nn.Module, mode: str | None = None) -> torch.nn.M
         )
     return torch.compile(model, mode=mode)  # type: ignore
 
+
+def reduce_gradients_in_buckets(params: Iterable[torch.nn.Parameter], world_size: int, bucket_mb: float) -> None:
+    """Average gradients across GPUs in bounded-size buckets.
+
+    Gradients are packed into buffers of at most ``bucket_mb`` and reduced with a single
+    ``all_reduce`` call per buffer. A gradient larger than the bucket on its own is reduced in
+    contiguous slices instead. This bounds the size of the temporary packed buffer while still
+    batching small gradients together to limit the number of collective calls.
+
+    Args:
+        params: Parameters whose gradients should be reduced. Parameters with no gradient are skipped.
+        world_size: Number of distributed processes to average the summed gradients over.
+        bucket_mb: Maximum size, in megabytes, of a single packed buffer.
+    """
+    bucket_bytes = int(bucket_mb * 1024 * 1024)
+    grads = [param.grad.view(-1) for param in params if param.grad is not None]
+    start = 0
+    while start < len(grads):
+        nbytes = grads[start].numel() * grads[start].element_size()
+        if nbytes > bucket_bytes:
+            # A single gradient larger than the bucket is reduced in contiguous slices
+            flat_grad = grads[start]
+            chunk_numel = max(1, bucket_bytes // flat_grad.element_size())
+            for offset in range(0, flat_grad.numel(), chunk_numel):
+                chunk = flat_grad.narrow(0, offset, min(chunk_numel, flat_grad.numel() - offset))
+                torch.distributed.all_reduce(chunk, op=torch.distributed.ReduceOp.SUM)
+                chunk /= world_size
+            start += 1
+            continue
+
+        filled_bytes = 0
+        end = start
+        while end < len(grads):
+            # A smaller gradient is packed with others until the bucket is full
+            grad_bytes = grads[end].numel() * grads[end].element_size()
+            if filled_bytes + grad_bytes > bucket_bytes:
+                break
+            filled_bytes += grad_bytes
+            end += 1
+
+        packed = torch.cat(grads[start:end])
+        torch.distributed.all_reduce(packed, op=torch.distributed.ReduceOp.SUM)
+        packed /= world_size
+        offset = 0
+        for flat_grad in grads[start:end]:
+            numel = flat_grad.numel()
+            flat_grad.copy_(packed[offset : offset + numel])
+            offset += numel
+        start = end
+
+
 def split_and_pad_trajectories(
     tensor: torch.Tensor | TensorDict, dones: torch.Tensor
 ) -> tuple[torch.Tensor | TensorDict, torch.Tensor]:
@@ -402,6 +455,20 @@ def resolve_optimizer(optimizer_name: str) -> torch.optim.Optimizer:
         return optimizer_dict[optimizer_name]
     else:
         raise ValueError(f"Invalid optimizer '{optimizer_name}'. Valid optimizers are: {list(optimizer_dict.keys())}")
+
+
+def resolve_class(cfg: dict) -> tuple[Callable, dict]:
+    """Resolve the class referenced by ``cfg["class_name"]`` without mutating ``cfg``.
+
+    Args:
+        cfg: Configuration dictionary with a ``"class_name"`` key and the constructor arguments of that class.
+
+    Returns:
+        The resolved class and a deep copy of ``cfg`` with ``"class_name"`` removed.
+    """
+    class_cfg = copy.deepcopy(cfg)
+    return resolve_callable(class_cfg.pop("class_name")), class_cfg
+
 
 def resolve_callable(callable_or_name: type | Callable | str) -> Callable:
     """Resolve a callable from a string, type, or return callable directly.

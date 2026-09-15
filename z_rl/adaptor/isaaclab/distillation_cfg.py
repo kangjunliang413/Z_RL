@@ -45,6 +45,18 @@ class ZRlDistillationAlgorithmCfg:
     student_stochastic_output: bool = False
     """Whether to use stochastic student outputs during rollout and distillation updates. Defaults to False."""
 
+    use_mixed_precision: bool = False
+    """Whether to run the forward pass and loss computation in bfloat16 autocast. Defaults to False.
+
+    Backward, gradient clipping, and the optimizer step always stay in fp32.
+    """
+
+    grad_reduce_bucket_mb: float = 25.0
+    """Maximum size, in megabytes, of a packed gradient buffer during multi-GPU reduction. Defaults to 25.
+
+    Matches ``torch.nn.parallel.DistributedDataParallel``'s default ``bucket_cap_mb``.
+    """
+
 
 #########################
 # Runner configurations #
