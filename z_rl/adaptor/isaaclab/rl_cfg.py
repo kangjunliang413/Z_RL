@@ -369,6 +369,27 @@ class ZRlEncoderEstimationPpoAlgorithmCfg(ZRlPpoAlgorithmCfg):
     """The observation terms selected from ``target_obs_group_name`` as the estimation target."""
 
 
+@configclass
+class ZRlMoEPpoAlgorithmCfg(ZRlPpoAlgorithmCfg):
+    """Configuration for PPO with MoE routing regularizers."""
+
+    class_name: str = "MoEPPO"
+    """The algorithm class name. Defaults to MoEPPO."""
+
+    gate_entropy_loss_coef: float = 0.0
+    """Coefficient for the (negated) gate-entropy term. Defaults to 0.
+
+    Positive values encourage a flatter per-sample mixture. Leave at 0 unless the gate is
+    collapsing to a hard assignment on every sample and that is undesirable.
+    """
+
+    expert_balance_loss_coef: float = 1.0e-4
+    """Coefficient for the expert-balance term. Defaults to 1e-4.
+
+    This is ``KL(mean_gate || uniform)`` and is the term that targets unused experts.
+    """
+
+
 #########################
 # Runner configurations #
 #########################

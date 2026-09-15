@@ -14,7 +14,7 @@ Main models:
 Predefined variants live in [`variants/`](https://github.com/syw-robotics/z_rl/tree/main/z_rl/models/variants):
 
 - `EncoderMLPModel`: `ComposableModel` variant with `MLPEncoderLatentSpec` as the latent stage.
-- `MoEModel`: `ComposableModel` variant whose head is replaced by a Mixture-of-Experts module. MoE head shape is controlled by `expert_hidden_dims` and `gate_hidden_dims`. This MoE implementation suppors the experts run **in parallel**.
+- `MoEModel`: `ComposableModel` variant whose head is replaced by a Mixture-of-Experts module. MoE head shape is controlled by `expert_hidden_dims` and `gate_hidden_dims`. This MoE implementation suppors the experts run **in parallel**. Pair it with `MoEPPO` to add expert-balance (and optional gate-entropy) routing regularizers.
 
 ## Export Logic
 

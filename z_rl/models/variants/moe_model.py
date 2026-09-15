@@ -25,14 +25,14 @@ class MoEHeadSpec(HeadSpec):
     """Explicit head spec that builds a Mixture-of-Experts output head."""
 
     num_experts: int = 4
-    expert_hidden_dims: tuple[int, ...] | list[int] | int = (256,)
-    gate_hidden_dims: tuple[int, ...] | list[int] | int | None = None
+    expert_hidden_dims: tuple[int, ...] | list[int] = (256,)
+    gate_hidden_dims: tuple[int, ...] | list[int] | None = None
 
     def validate(self, model: nn.Module) -> None:
         """Validate MoE-specific parameters before the head is rebuilt."""
         if self.num_experts <= 0:
             raise ValueError(f"`num_experts` must be positive, got {self.num_experts}.")
-        if isinstance(self.expert_hidden_dims, (tuple, list)) and len(self.expert_hidden_dims) == 0:
+        if len(self.expert_hidden_dims) == 0:
             raise ValueError("`expert_hidden_dims` can not be empty.")
 
     def build_head(self, model: nn.Module, input_dim: int, output_dim: int, activation: str) -> nn.Module:
@@ -63,8 +63,8 @@ class MoEModel(ComposableModel):
         obs_normalization: ObservationNormalizationConfig = False,
         distribution_cfg: dict | None = None,
         num_experts: int = 4,
-        expert_hidden_dims: tuple[int, ...] | list[int] | int = (256,),
-        gate_hidden_dims: tuple[int, ...] | list[int] | int | None = None,
+        expert_hidden_dims: tuple[int, ...] | list[int] = (256,),
+        gate_hidden_dims: tuple[int, ...] | list[int] | None = None,
         pretrained_expert_path: str | None = None,
         pretrained_expert_state_dict_key: str | None = None,
         load_pretrained_expert_strict: bool = True,

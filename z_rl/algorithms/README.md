@@ -10,6 +10,7 @@ The core algorithm classes are:
 - `PPO`: on-policy reinforcement learning with actor/critic models and rollout-based updates.
 - `Distillation`: behavior-cloning style training where a student model learns to match a teacher model.
 - `EncoderEstimationPPO`: `ComposablePPO` preset with encoder-latent estimation enabled.
+- `MoEPPO`: `ComposablePPO` preset with MoE gate-entropy and expert-balance regularizers.
 
 The preferred explicit extension path is now the composition API:
 
@@ -161,6 +162,7 @@ Use these files as the canonical examples:
 - `composition/composable_ppo.py`: shared composition builder for PPO variants
 - `composition/specs.py`: contract for PPO loss extensions
 - `variants/encoder_estimation_ppo.py`: predefined algorithm variant and its `EncoderEstimationLossSpec`
+- `variants/moe_ppo.py`: predefined algorithm variant and its `MoERoutingLossSpec`
 - `distillation.py`: student/teacher distillation loop with gradient accumulation
 
 ## Maintenance Notes
