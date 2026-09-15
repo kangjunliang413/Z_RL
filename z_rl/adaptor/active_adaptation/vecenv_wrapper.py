@@ -3,7 +3,10 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Z-RL vector-environment wrapper for Active Adaptation environments."""
+"""Z-RL vector-environment wrapper for Active Adaptation environments.
+
+NOTE: no real AA/sim tests yet. ``tests/adaptor/`` is fake-env only.
+"""
 
 from __future__ import annotations
 
@@ -18,6 +21,8 @@ from z_rl.env import VecEnv
 
 class ActiveAdaptationVecEnvWrapper(VecEnv):
     """Adapt an AA TorchRL environment to the Z-RL ``VecEnv`` protocol.
+
+    NOTE: no real AA/sim tests yet. ``tests/adaptor/`` is fake-env only.
 
     The wrapper owns the current TorchRL carry. Z-RL supplies only a flat action
     tensor, while the wrapper returns reset-aware observations and extracts the

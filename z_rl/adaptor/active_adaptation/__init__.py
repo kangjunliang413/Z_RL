@@ -3,7 +3,10 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Adapters for using Active Adaptation environments with Z-RL."""
+"""Adapters for using Active Adaptation environments with Z-RL.
+
+NOTE: no real AA/sim tests yet. ``tests/adaptor/`` is fake-env only.
+"""
 
 from .env_factory import make_active_adaptation_env
 from .symmetry import ActiveAdaptationSymmetryCompiler

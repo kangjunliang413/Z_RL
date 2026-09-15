@@ -28,6 +28,8 @@ def make_active_adaptation_env(
 ) -> Any:
     """Build an AA ``TransformedEnv`` without constructing an AA policy.
 
+    NOTE: no real AA/sim tests yet. ``tests/adaptor/`` is fake-env only.
+
     ``active_adaptation.init(...)`` must be called before this function. Imports
     stay local so importing :mod:`z_rl` does not require AA or TorchRL.
     """

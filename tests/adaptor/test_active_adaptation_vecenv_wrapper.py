@@ -3,6 +3,11 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
+"""Fake-AA unit tests for ``ActiveAdaptationVecEnvWrapper``.
+
+NOTE: these do not run against a real Active Adaptation environment or simulator.
+"""
+
 from __future__ import annotations
 
 import torch

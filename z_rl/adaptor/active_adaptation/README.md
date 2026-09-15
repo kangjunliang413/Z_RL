@@ -7,6 +7,8 @@ wrapper applies to IsaacLab, Mjlab, Mujoco, and Motrix environments supported by
 
 ## Scope
 
+**Testing:** no real AA/simulator coverage. `tests/adaptor/` uses a mocked AA env only.
+
 This early version supports:
 
 - Z-RL's flat continuous action interface with one named AA action input
@@ -96,8 +98,8 @@ wrapper leaves stats on the environment device; the Z-RL logger reuses its
 completed-environment indices, so this path adds no device-host synchronization.
 
 `make_active_adaptation_env()` deliberately uses AA's `_EnvBase.registry` because
-AA currently has no public environment-only factory. Pin the AA version and run
-the adaptor contract tests when updating AA.
+AA currently has no public environment-only factory. Pin the AA version when
+updating AA; current adaptor tests are mocked and do not replace a real-env check.
 
 ## TODO
 
@@ -105,3 +107,4 @@ the adaptor contract tests when updating AA.
 - Coordinate AA and Z-RL distributed initialization for multi-GPU training.
 - Materialize and mirror AA functional observation groups.
 - Support image/channel symmetry and other non-vector observation layouts.
+- Add tests against a real Active Adaptation environment (current `tests/adaptor/` is fake-env only).

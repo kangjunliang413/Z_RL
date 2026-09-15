@@ -3,6 +3,11 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
+"""Fake-AA unit tests for ``make_active_adaptation_env``.
+
+NOTE: these mock AA/TorchRL modules and do not construct a real environment.
+"""
+
 from __future__ import annotations
 
 import sys
