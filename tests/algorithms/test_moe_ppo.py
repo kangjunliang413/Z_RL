@@ -62,7 +62,7 @@ def _add_transition(algo: PPO, obs) -> None:
     transition.actions = algo.actor(obs, stochastic_output=True).detach()
     transition.values = algo.critic(obs).detach()
     transition.actions_log_prob = algo.actor.get_output_log_prob(transition.actions).detach()
-    transition.distribution_params = tuple(p.detach() for p in algo.actor.output_distribution_params)
+    transition.distribution_params = tuple(p.detach() for p in algo.actor.distribution.params)
     transition.rewards = torch.ones(NUM_ENVS)
     transition.dones = torch.zeros(NUM_ENVS)
     algo.storage.add_transition(transition)
@@ -86,6 +86,9 @@ class TestMoEPPO:
         critic = _make_critic(obs, obs_groups)
         storage = _make_storage(obs)
         algo = MoEPPO(actor, critic, storage, schedule="fixed")
+
+        assert algo.gate_entropy_loss_coef == 0.0
+        assert algo.expert_balance_loss_coef == 1.0e-4
 
         for _ in range(NUM_STEPS):
             _add_transition(algo, obs)

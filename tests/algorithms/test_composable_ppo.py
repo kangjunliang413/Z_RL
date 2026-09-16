@@ -38,8 +38,9 @@ def _make_critic(obs, obs_groups):
 
 
 class _DummyLossSpec(PPOLossSpec):
-    def __init__(self) -> None:
+    def __init__(self, aux_loss_coef: float = 1.0) -> None:
         self.validated_algo = None
+        self.aux_loss_coef = aux_loss_coef
 
     def validate(self, algo: object) -> None:
         self.validated_algo = algo
@@ -91,6 +92,33 @@ class TestComposablePPO:
         assert opt_losses["aux_loss"].item() == 2.0
         assert non_opt_losses["kl"].item() == 0.5
         assert non_opt_losses["aux_metric"].item() == 3.0
+        assert algo.aux_loss_coef == 1.0
+
+    def test_build_loss_spec_from_config_dict(self) -> None:
+        from z_rl.algorithms import MoERoutingLossSpec
+
+        algorithm_cfg = {
+            "loss_spec": {"class_name": "MoERoutingLossSpec", "expert_balance_loss_coef": 0.3},
+            "value_loss_coef": 1.0,
+        }
+
+        spec = ComposablePPO.build_loss_spec(env=None, algorithm_cfg=algorithm_cfg)
+
+        assert isinstance(spec, MoERoutingLossSpec)
+        assert spec.expert_balance_loss_coef == 0.3
+        assert "loss_spec" not in algorithm_cfg
+        assert algorithm_cfg["value_loss_coef"] == 1.0
+
+    def test_build_loss_spec_binds_flat_coef_fields(self) -> None:
+        from z_rl.algorithms import MoEPPO, MoERoutingLossSpec
+
+        algorithm_cfg = {"expert_balance_loss_coef": 0.4, "value_loss_coef": 1.0}
+        spec = MoEPPO.build_loss_spec(env=None, algorithm_cfg=algorithm_cfg)
+
+        assert isinstance(spec, MoERoutingLossSpec)
+        assert spec.expert_balance_loss_coef == 0.4
+        assert "expert_balance_loss_coef" not in algorithm_cfg
+        assert algorithm_cfg["value_loss_coef"] == 1.0
 
     def test_subclass_can_override_act(self) -> None:
         class _CustomActionPPO(ComposablePPO):
@@ -137,7 +165,7 @@ class TestComposablePPO:
         transition.actions = actor(obs, stochastic_output=True).detach()
         transition.values = critic(obs).detach()
         transition.actions_log_prob = actor.get_output_log_prob(transition.actions).detach()
-        transition.distribution_params = tuple(p.detach() for p in actor.output_distribution_params)
+        transition.distribution_params = tuple(p.detach() for p in actor.distribution.params)
         transition.rewards = torch.ones(NUM_ENVS)
         transition.dones = torch.zeros(NUM_ENVS)
         storage.add_transition(transition)

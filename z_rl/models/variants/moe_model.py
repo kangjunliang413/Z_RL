@@ -12,15 +12,13 @@ from typing import Any
 
 import torch
 import torch.nn as nn
-from tensordict import TensorDict
 
 from z_rl.modules import MoE
 
 from z_rl.models.composition import ComposableModel, HeadSpec
-from z_rl.models.mlp_model import ObservationNormalizationConfig
 
 
-@dataclass(slots=True)
+@dataclass
 class MoEHeadSpec(HeadSpec):
     """Explicit head spec that builds a Mixture-of-Experts output head."""
 
@@ -35,7 +33,7 @@ class MoEHeadSpec(HeadSpec):
         if len(self.expert_hidden_dims) == 0:
             raise ValueError("`expert_hidden_dims` can not be empty.")
 
-    def build_head(self, model: nn.Module, input_dim: int, output_dim: int, activation: str) -> nn.Module:
+    def build(self, model: nn.Module, input_dim: int, output_dim: int, activation: str) -> nn.Module:
         """Build the MoE head for the provided model dimensions."""
         return MoE(
             input_dim,
@@ -48,45 +46,27 @@ class MoEHeadSpec(HeadSpec):
 
 
 class MoEModel(ComposableModel):
-    """MLPModel variant whose head is a Mixture-of-Experts MLP.
+    """Named MLP preset whose head is a Mixture-of-Experts MLP.
 
     Data flow: ``obs groups -> (per-group normalization) -> concat latent -> MoE head -> (distribution) -> output``.
+    Extra ``__init__`` is only for pretrained expert loading; routing hyperparameters bind onto ``MoEHeadSpec``.
     """
+
+    head_spec_class = MoEHeadSpec
 
     def __init__(
         self,
-        obs: TensorDict,
-        obs_groups: dict[str, list[str]],
-        obs_set: str,
-        output_dim: int,
-        activation: str = "elu",
-        obs_normalization: ObservationNormalizationConfig = False,
-        distribution_cfg: dict | None = None,
-        num_experts: int = 4,
-        expert_hidden_dims: tuple[int, ...] | list[int] = (256,),
-        gate_hidden_dims: tuple[int, ...] | list[int] | None = None,
+        *args,
         pretrained_expert_path: str | None = None,
         pretrained_expert_state_dict_key: str | None = None,
         load_pretrained_expert_strict: bool = True,
         pretrained_expert_target_indices: list[int] | None = None,
         pretrained_expert_target_index: int | None = None,
         pretrained_expert_specs: list[dict[str, Any]] | None = None,
+        **kwargs,
     ) -> None:
-        """Initialize the MoE-based model with an explicit MoE head spec."""
-        super().__init__(
-            obs=obs,
-            obs_groups=obs_groups,
-            obs_set=obs_set,
-            output_dim=output_dim,
-            activation=activation,
-            obs_normalization=obs_normalization,
-            distribution_cfg=distribution_cfg,
-            head_spec=MoEHeadSpec(
-                num_experts=num_experts,
-                expert_hidden_dims=expert_hidden_dims,
-                gate_hidden_dims=gate_hidden_dims,
-            ),
-        )
+        """Initialize the MoE model, then optionally load pretrained expert weights."""
+        super().__init__(*args, **kwargs)
 
         if pretrained_expert_target_index is not None:
             if pretrained_expert_target_indices is not None:

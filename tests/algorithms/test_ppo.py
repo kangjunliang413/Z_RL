@@ -293,7 +293,7 @@ class TestGAEComputation:
             t.actions = ppo.actor(obs, stochastic_output=True).detach()
             t.values = ppo.critic(obs).detach()
             t.actions_log_prob = ppo.actor.get_output_log_prob(t.actions).detach()
-            t.distribution_params = tuple(p.detach() for p in ppo.actor.output_distribution_params)
+            t.distribution_params = tuple(p.detach() for p in ppo.actor.distribution.params)
             t.rewards = torch.randn(NUM_ENVS)
             t.dones = torch.zeros(NUM_ENVS)
             ppo.storage.add_transition(t)
@@ -448,8 +448,8 @@ class TestNormalizationUpdates:
             ppo.act(rollout_obs)
             ppo.process_env_step(next_obs, torch.ones(NUM_ENVS), torch.zeros(NUM_ENVS), {})
 
-        assert actor.obs_normalizer.count == 0
-        assert critic.obs_normalizer.count == 0
+        assert actor.latent_adapter.obs_normalizer.count == 0
+        assert critic.latent_adapter.obs_normalizer.count == 0
 
         actor(storage.observations[0], stochastic_output=True)
         current_log_prob = actor.get_output_log_prob(storage.actions[0])
@@ -461,10 +461,10 @@ class TestNormalizationUpdates:
         ppo.update()
 
         expected_count = NUM_ENVS * NUM_STEPS
-        assert actor.obs_normalizer.count == expected_count
-        assert critic.obs_normalizer.count == expected_count
-        assert torch.allclose(actor.obs_normalizer.mean, expected_mean)
-        assert torch.allclose(critic.obs_normalizer.mean, expected_mean)
+        assert actor.latent_adapter.obs_normalizer.count == expected_count
+        assert critic.latent_adapter.obs_normalizer.count == expected_count
+        assert torch.allclose(actor.latent_adapter.obs_normalizer.mean, expected_mean)
+        assert torch.allclose(critic.latent_adapter.obs_normalizer.mean, expected_mean)
 
 
 class TestMixedPrecision:

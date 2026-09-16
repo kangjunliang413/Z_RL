@@ -9,14 +9,16 @@ from __future__ import annotations
 
 import tempfile
 import torch
+import torch.nn as nn
 from tensordict import TensorDict
 
 import onnx
 import pytest
 
 from tests.conftest import make_obs
-from z_rl.models import EncoderMLPModel, MLPModel
+from z_rl.models import EncoderMLPModel, GroupObsLatentAdapter, MLPModel, ObsLatentAdapter
 from z_rl.modules import EmpiricalNormalization
+from z_rl.utils import ObsSelector
 
 NUM_ENVS = 4
 OBS_DIM = 8
@@ -163,7 +165,7 @@ class TestEncoderSpec:
             "actor",
             1,
             hidden_dims=[8],
-            latent_dim=5,
+            encoder_latent_dim=5,
             encoder_hidden_dims=[7],
         )
 
@@ -183,7 +185,7 @@ class TestEncoderSpec:
             "actor",
             1,
             hidden_dims=[8],
-            latent_dim=5,
+            encoder_latent_dim=5,
             encoder_hidden_dims=[7],
             concat_last_obs=True,
             obs_group_time_slice_map=time_slice_map,
@@ -208,7 +210,7 @@ class TestEncoderSpec:
                 "actor",
                 1,
                 hidden_dims=[8],
-                latent_dim=4,
+                encoder_latent_dim=4,
                 encoder_hidden_dims=[6],
             )
 
@@ -286,7 +288,7 @@ class TestMLPModelExport:
                 "init_std": 1.0,
                 "std_type": "scalar",
             },
-            latent_dim=6,
+            encoder_latent_dim=6,
             encoder_hidden_dims=[12],
             concat_last_obs=True,
             obs_group_time_slice_map={"policy": {"last": slice(6, 8)}},
@@ -308,3 +310,89 @@ class TestMLPModelExport:
             )
             loaded = onnx.load(f.name)
             onnx.checker.check_model(loaded)
+
+
+class TestObsLatentAdapter:
+    """Concat groups, one normalizer, one encoder."""
+
+    def test_flat_tensor_matches_tensordict(self) -> None:
+        obs = TensorDict({"a": torch.randn(2, 3), "b": torch.randn(2, 4)}, batch_size=[2])
+        adapter = ObsLatentAdapter(
+            obs_groups=["a", "b"],
+            obs_normalizer=nn.Identity(),
+            encoder=nn.Linear(7, 5),
+        )
+        concat = torch.cat([obs["a"], obs["b"]], dim=-1)
+        assert torch.allclose(adapter(obs), adapter.as_export_module()(concat))
+
+    def test_append_obs_selects_from_concat(self) -> None:
+        obs = TensorDict({"policy": torch.arange(16, dtype=torch.float32).view(2, 8)}, batch_size=[2])
+        adapter = ObsLatentAdapter(
+            obs_groups=["policy"],
+            obs_normalizer=nn.Identity(),
+            append_obs=ObsSelector(slice(6, 8)),
+        )
+        latent = adapter(obs)
+        assert torch.allclose(latent[:, :8], obs["policy"])
+        assert torch.allclose(latent[:, 8:], obs["policy"][:, 6:8])
+
+class TestGroupObsLatentAdapter:
+    """Per-group normalizer and encoder, then concat."""
+
+    def test_encodes_each_group_then_cats(self) -> None:
+        obs = TensorDict({"prop": torch.randn(2, 3), "scan": torch.randn(2, 4)}, batch_size=[2])
+        adapter = GroupObsLatentAdapter(
+            obs_groups=["prop", "scan"],
+            obs_group_dims=(3, 4),
+            encoders={"prop": nn.Linear(3, 2), "scan": nn.Linear(4, 5)},
+            obs_normalizers={"prop": nn.Identity(), "scan": nn.Identity()},
+        )
+        concat = torch.cat([obs["prop"], obs["scan"]], dim=-1)
+        latent = adapter(obs)
+        assert latent.shape == (2, 7)
+        assert torch.allclose(latent, adapter.as_export_module()(concat))
+
+    def test_update_normalization_is_per_group(self) -> None:
+        adapter = GroupObsLatentAdapter(
+            obs_groups=["prop", "scan"],
+            obs_group_dims=(3, 4),
+            encoders={"prop": nn.Identity(), "scan": nn.Identity()},
+            obs_normalizers={"prop": EmpiricalNormalization(3), "scan": EmpiricalNormalization(4)},
+        )
+        obs = TensorDict(
+            {"prop": torch.ones(8, 3) * 2, "scan": torch.ones(8, 4) * 10},
+            batch_size=[8],
+        )
+        adapter.train()
+        adapter.update_normalization(obs)
+        assert adapter.obs_normalizers["prop"].count == 8
+        assert adapter.obs_normalizers["scan"].count == 8
+        assert torch.allclose(adapter.obs_normalizers["prop"].mean, torch.full((3,), 2.0))
+        assert torch.allclose(adapter.obs_normalizers["scan"].mean, torch.full((4,), 10.0))
+
+    def test_append_obs_appends_last_policy_frame(self) -> None:
+        obs = TensorDict(
+            {"policy": torch.arange(16, dtype=torch.float32).view(2, 8), "scan": torch.ones(2, 4)},
+            batch_size=[2],
+        )
+        adapter = GroupObsLatentAdapter(
+            obs_groups=["policy", "scan"],
+            obs_group_dims=(8, 4),
+            encoders={"policy": nn.Identity(), "scan": nn.Identity()},
+            obs_normalizers={"policy": nn.Identity(), "scan": nn.Identity()},
+            append_obs=ObsSelector(slice(6, 8)),
+        )
+        latent = adapter(obs)
+        assert latent.shape == (2, 14)
+        assert torch.allclose(latent[:, :8], obs["policy"])
+        assert torch.allclose(latent[:, 8:12], obs["scan"])
+        assert torch.allclose(latent[:, 12:], obs["policy"][:, 6:8])
+
+    def test_encoders_must_cover_every_group(self) -> None:
+        with pytest.raises(ValueError, match="encoders"):
+            GroupObsLatentAdapter(
+                obs_groups=["prop", "scan"],
+                obs_group_dims=(3, 4),
+                encoders={"prop": nn.Identity()},
+                obs_normalizers={"prop": nn.Identity(), "scan": nn.Identity()},
+            )

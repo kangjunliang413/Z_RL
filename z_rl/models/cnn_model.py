@@ -60,8 +60,25 @@ class CNNModel(MLPModel):
             cnn_projectors: Projection modules to use, e.g., for sharing projected CNN branches between actor and
                 critic.
         """
-        # Resolve observation groups and dimensions
-        self._get_obs_dim(obs, obs_groups, obs_set)
+        obs_groups_1d: list[str] = []
+        obs_groups_2d: list[str] = []
+        obs_dims_2d: list[tuple[int, ...]] = []
+        obs_channels_2d: list[int] = []
+        for obs_group in obs_groups[obs_set]:
+            ndim = len(obs[obs_group].shape)
+            if ndim == 4:  # B, C, H, W
+                obs_groups_2d.append(obs_group)
+                obs_dims_2d.append(obs[obs_group].shape[2:4])
+                obs_channels_2d.append(obs[obs_group].shape[1])
+            elif ndim == 2:  # B, D
+                obs_groups_1d.append(obs_group)
+            else:
+                raise ValueError(f"Invalid observation shape for {obs_group}: {obs[obs_group].shape}")
+        if not obs_groups_2d:
+            raise ValueError("No 2D observations are provided. If this is intentional, use the MLP model instead.")
+        self.obs_groups_2d = obs_groups_2d
+        self.obs_dims_2d = obs_dims_2d
+        self.obs_channels_2d = obs_channels_2d
 
         # Create or validate CNN encoders
         if cnns is not None:
@@ -102,11 +119,14 @@ class CNNModel(MLPModel):
                 self.cnn_latent_dim += int(cnn.output_dim)  # type: ignore[arg-type]
             else:
                 self.cnn_latent_dim += self._get_projector_output_dim(cnn_projectors[obs_group])
+        self.latent_dim = sum(int(obs[group].shape[-1]) for group in obs_groups_1d) + self.cnn_latent_dim
 
-        # Initialize the parent MLP model
+        # Parent MLP only consumes 1D groups; 2D groups are handled by CNN branches.
+        mlp_obs_groups = dict(obs_groups)
+        mlp_obs_groups[obs_set] = obs_groups_1d
         super().__init__(
             obs,
-            obs_groups,
+            mlp_obs_groups,
             obs_set,
             output_dim,
             hidden_dims,
@@ -144,41 +164,6 @@ class CNNModel(MLPModel):
     def as_onnx(self, verbose: bool = False) -> nn.Module:
         """Return a version of the model compatible with ONNX export."""
         return _OnnxCNNModel(self, verbose)
-
-    def _get_obs_dim(self, obs: TensorDict, obs_groups: dict[str, list[str]], obs_set: str) -> tuple[list[str], int]:
-        """Select active observation groups and compute observation dimension."""
-        active_obs_groups = obs_groups[obs_set]
-        obs_dim_1d = 0
-        obs_groups_1d = []
-        obs_dims_2d = []
-        obs_channels_2d = []
-        obs_groups_2d = []
-
-        # Iterate through active observation groups and separate 1D and 2D observations
-        for obs_group in active_obs_groups:
-            if len(obs[obs_group].shape) == 4:  # B, C, H, W
-                obs_groups_2d.append(obs_group)
-                obs_dims_2d.append(obs[obs_group].shape[2:4])
-                obs_channels_2d.append(obs[obs_group].shape[1])
-            elif len(obs[obs_group].shape) == 2:  # B, C
-                obs_groups_1d.append(obs_group)
-                obs_dim_1d += obs[obs_group].shape[-1]
-            else:
-                raise ValueError(f"Invalid observation shape for {obs_group}: {obs[obs_group].shape}")
-
-        if not obs_groups_2d:
-            raise ValueError("No 2D observations are provided. If this is intentional, use the MLP model instead.")
-
-        # Store active 2D observation groups and dimensions directly as attributes
-        self.obs_dims_2d = obs_dims_2d
-        self.obs_channels_2d = obs_channels_2d
-        self.obs_groups_2d = obs_groups_2d
-        # Return active 1D observation groups and dimension for parent class
-        return obs_groups_1d, obs_dim_1d
-
-    def get_latent_dim(self) -> int:
-        """Return the latent dimensionality consumed by the model head."""
-        return self.obs_dim + self.cnn_latent_dim
 
     def _build_cnn_projectors(
         self,

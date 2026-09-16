@@ -37,40 +37,51 @@ Preferred customization lives in [`composition/`](/home/syw/.gitrepos/z_rl/tree/
 
 - `composition/specs.py`: base classes `LatentSpec` and `HeadSpec`
 - `composition/composable_model.py`: `ComposableModel`
-- `variants/`: concrete model variants and their variant-specific latent/head specs
+- `composition/adapters.py`: `ObsLatentAdapter` (concat groups, one normalizer, one encoder) and
+  `GroupObsLatentAdapter` (per-group normalizer and encoder, then concat)
+- `variants/`: named presets and their variant-specific latent/head specs
 
-Simple usage:
+The user-facing unit is the spec. Config can point `ComposableModel` at a spec without a named model subclass:
 
 ```python
-from z_rl.models.composition import ComposableModel, HeadSpec, LatentSpec
+actor = {
+    "class_name": "ComposableModel",
+    "latent_spec": {"class_name": "MLPEncoderLatentSpec", "encoder_latent_dim": 128},
+    "head_spec": {"class_name": "MoEHeadSpec", "num_experts": 4, "expert_hidden_dims": [256]},
+}
+```
+
+Programmatic construction still accepts instances, classes, or the same config dicts:
+
+```python
+from z_rl.models import ComposableModel, MLPEncoderLatentSpec, MoEHeadSpec
 
 model = ComposableModel(
     ...,
-    latent_spec=MyLatentSpec(...),
-    head_spec=MyHeadSpec(...),
+    latent_spec=MLPEncoderLatentSpec(encoder_latent_dim=128),
+    head_spec=MoEHeadSpec(num_experts=4),
 )
 ```
 
-`LatentSpec` defines:
+`LatentSpec` requires `build(model)` and `get_latent_dim(model)`. Optional:
 
-- `validate(model)`
-- `build_latent_adapter(model)`
-- `get_latent_dim(model)`
+- `validate(model)`: no-op by default
 
-The adapter returned by `build_latent_adapter(model)` should implement `forward(obs: TensorDict)`. It may also implement
-`update_normalization(obs)` when it owns normalization statistics.
+The adapter returned by `build(model)` should implement `forward(obs: TensorDict)`. It may also implement
+`update_normalization(obs)` when it owns normalization statistics. Built-in adapters implement `as_export_module()` so
+training `forward` stays TensorDict-only.
 
-`HeadSpec` defines:
+Omit `latent_spec` to keep `model.obs_dim`.
 
-- `validate(model)`
-- `build_head(model, input_dim, output_dim, activation)`
+`HeadSpec` requires `build(model, input_dim, output_dim, activation)`. `validate(model)` is a no-op by default.
 
 If a latent spec changes the latent width, `ComposableModel` rebuilds the head with the new dimension.
 
+
 Variant-owned specs:
 
-- `models/variants/encoder_mlp_model.py`: contains `EncoderMLPModel` and its `MLPEncoderLatentSpec`
-- `models/variants/moe_model.py`: contains `MoEModel` and its `MoEHeadSpec`
+- `models/variants/encoder_mlp_model.py`: `MLPEncoderLatentSpec` and `EncoderMLPModel`
+- `models/variants/moe_model.py`: `MoEHeadSpec` and `MoEModel`
 
 When a latent or head spec only serves one concrete model variant, keep that spec in the same variant module rather
 than under `composition/`.

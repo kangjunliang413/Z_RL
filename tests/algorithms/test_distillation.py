@@ -138,13 +138,13 @@ class TestDistillationLoss:
             alg.act(rollout_obs)
             alg.process_env_step(next_obs, torch.ones(NUM_ENVS), torch.zeros(NUM_ENVS), {})
 
-        assert alg.student.obs_normalizer.count == 0
+        assert alg.student.latent_adapter.obs_normalizer.count == 0
 
         expected_mean = storage.observations["policy"].flatten(0, 1).mean(dim=0)
         alg.update()
 
-        assert alg.student.obs_normalizer.count == NUM_ENVS * NUM_STEPS
-        assert torch.allclose(alg.student.obs_normalizer.mean, expected_mean)
+        assert alg.student.latent_adapter.obs_normalizer.count == NUM_ENVS * NUM_STEPS
+        assert torch.allclose(alg.student.latent_adapter.obs_normalizer.mean, expected_mean)
 
 
 class TestGradientBudgetWarning:

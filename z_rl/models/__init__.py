@@ -5,9 +5,14 @@
 
 """Neural models for the learning algorithm."""
 
-from .composition import ComposableModel
+from .composition import ComposableModel, GroupObsLatentAdapter, ObsLatentAdapter, HeadSpec, LatentSpec
 from .mlp_model import MLPModel
-from .variants import EncoderMLPModel, MoEModel, VAEModel
+from .variants import (
+    EncoderMLPModel,
+    MLPEncoderLatentSpec,
+    MoEHeadSpec,
+    MoEModel,
+)
 from .rnn_model import RNNModel
 from .cnn_model import CNNModel
 
@@ -15,9 +20,14 @@ from .cnn_model import CNNModel
 __all__ = [
     "MLPModel",
     "ComposableModel",
+    "ObsLatentAdapter",
+    "GroupObsLatentAdapter",
+    "LatentSpec",
+    "HeadSpec",
     "EncoderMLPModel",
+    "MLPEncoderLatentSpec",
+    "MoEHeadSpec",
     "MoEModel",
-    "VAEModel",
     "RNNModel",
     "CNNModel",
 ]

@@ -81,10 +81,6 @@ class RNNModel(MLPModel):
         """Return a version of the model compatible with ONNX export."""
         return _OnnxRNNModel(self, verbose)
 
-    def get_latent_dim(self) -> int:
-        """Return the latent dimensionality consumed by the model head."""
-        return self.latent_dim
-
 
 class _OnnxRNNModel(nn.Module):
     """Exportable RNN model for ONNX."""

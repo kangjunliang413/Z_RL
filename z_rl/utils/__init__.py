@@ -22,6 +22,9 @@ from .utils import (
     resolve_optimizer,
     resolve_class,
     resolve_callable,
+    resolve_spec,
+    spec_init_field_names,
+    bind_matching_fields,
 )
 
 
@@ -56,4 +59,7 @@ __all__ = [
     "resolve_optimizer",
     "resolve_class",
     "resolve_callable",
+    "resolve_spec",
+    "spec_init_field_names",
+    "bind_matching_fields",
 ]

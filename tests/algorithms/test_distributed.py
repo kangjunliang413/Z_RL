@@ -122,7 +122,7 @@ def _fill_ppo_storage(ppo: PPO, obs: TensorDict) -> None:
         t.actions = ppo.actor(obs, stochastic_output=True).detach()
         t.values = ppo.critic(obs).detach()
         t.actions_log_prob = ppo.actor.get_output_log_prob(t.actions).detach()
-        t.distribution_params = tuple(p.detach() for p in ppo.actor.output_distribution_params)
+        t.distribution_params = tuple(p.detach() for p in ppo.actor.distribution.params)
         t.rewards = torch.randn(NUM_ENVS)
         t.dones = torch.zeros(NUM_ENVS)
         ppo.storage.add_transition(t)

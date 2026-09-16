@@ -95,6 +95,20 @@ class ZRlMLPModelCfg:
 
 
 @configclass
+class ZRlComposableModelCfg(ZRlMLPModelCfg):
+    """Configuration for a model composed from optional latent and head specs."""
+
+    class_name: str = "ComposableModel"
+    """The model class name. Defaults to ComposableModel."""
+
+    latent_spec: dict | None = None
+    """Optional latent spec reference: ``{"class_name": ..., ...}`` or omitted for the default adapter."""
+
+    head_spec: dict | None = None
+    """Optional head spec reference: ``{"class_name": ..., ...}`` or omitted for the default MLP head."""
+
+
+@configclass
 class ZRlRNNModelCfg(ZRlMLPModelCfg):
     """Configuration for RNN model."""
 
@@ -162,7 +176,7 @@ class ZRlEncoderMLPModelCfg(ZRlMLPModelCfg):
     class_name: str = "EncoderMLPModel"
     """The model class name. Defaults to EncoderMLPModel."""
 
-    latent_dim: int = 128
+    encoder_latent_dim: int = 128
     """The latent dimension produced by the encoder branch."""
 
     encoder_hidden_dims: list[int] = MISSING
@@ -173,29 +187,6 @@ class ZRlEncoderMLPModelCfg(ZRlMLPModelCfg):
 
     concat_last_obs: bool = False
     """Whether to concatenate the last observation frame to the encoder latent. Defaults to False."""
-
-
-@configclass
-class ZRlVAEModelCfg(ZRlMLPModelCfg):
-    """Configuration for VAE-based model."""
-
-    class_name: str = "VAEModel"
-    """The model class name. Defaults to VAEModel."""
-
-    latent_dim: int = 64
-    """The latent dimension produced by the VAE encoder branch."""
-
-    encoder_hidden_dims: list[int] = MISSING
-    """The hidden dimensions of the VAE encoder MLP."""
-
-    decoder_input_dim: int | None = None
-    """The latent slice dimension consumed by the VAE decoder. If None, defaults to latent_dim."""
-
-    decoder_hidden_dims: list[int] = MISSING
-    """The hidden dimensions of the VAE decoder MLP."""
-
-    vae_activation: str = "elu"
-    """The activation function for the VAE encoder/decoder MLPs. Defaults to elu."""
 
 
 @configclass
@@ -350,6 +341,21 @@ class ZRlPpoAlgorithmCfg:
 
     symmetry_cfg: ZRlSymmetryCfg | None = None
     """Optional mirror-loss and diagnostic settings."""
+
+
+@configclass
+class ZRlComposablePpoAlgorithmCfg(ZRlPpoAlgorithmCfg):
+    """Configuration for PPO composed from a loss spec.
+
+    Point ``loss_spec`` at a ``PPOLossSpec`` class. Spec fields named ``<loss_key>_coef`` are
+    copied onto the algorithm so they weight the corresponding extra loss.
+    """
+
+    class_name: str = "ComposablePPO"
+    """The algorithm class name. Defaults to ComposablePPO."""
+
+    loss_spec: dict = MISSING
+    """Loss spec reference: ``{"class_name": "MyAuxLossSpec", "my_aux_loss_coef": 0.1, ...}``."""
 
 
 @configclass

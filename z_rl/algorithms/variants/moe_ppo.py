@@ -6,11 +6,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import torch
 
-from z_rl.env import VecEnv
 from z_rl.modules import MoE
 from z_rl.storage import RolloutStorage
 
@@ -28,11 +27,12 @@ def _moe_heads(algo: object) -> list[MoE]:
     return heads
 
 
-@dataclass(slots=True)
+@dataclass
 class MoERoutingLossSpec(PPOLossSpec):
     """PPO loss spec that regularizes MoE gate collapse."""
 
-    _heads: list[MoE] = field(default_factory=list, init=False, repr=False)
+    gate_entropy_loss_coef: float = 0.0
+    expert_balance_loss_coef: float = 1.0e-4
 
     def validate(self, algo: object) -> None:
         """Require at least one MoE head on the actor or critic, then cache them."""
@@ -68,31 +68,6 @@ class MoERoutingLossSpec(PPOLossSpec):
 
 
 class MoEPPO(ComposablePPO):
-    """Composable PPO variant with MoE routing regularizers."""
+    """Named PPO preset that installs ``MoERoutingLossSpec`` by default."""
 
-    def __init__(
-        self,
-        *args,
-        gate_entropy_loss_coef: float = 0.0,
-        expert_balance_loss_coef: float = 1.0e-4,
-        **kwargs,
-    ) -> None:
-        """Initialize the variant and expose coefficients for MoE routing losses.
-
-        ``expert_balance_loss`` penalizes uneven expert usage across a minibatch and is the
-        term that directly targets gate collapse. ``gate_entropy_loss`` encourages a flatter
-        per-sample mixture; it is off by default because it fights useful hard specialization.
-        """
-        self.gate_entropy_loss_coef = gate_entropy_loss_coef
-        self.expert_balance_loss_coef = expert_balance_loss_coef
-        kwargs.setdefault("loss_spec", MoERoutingLossSpec())
-        super().__init__(*args, **kwargs)
-
-    @classmethod
-    def build_loss_spec(cls, env: VecEnv, algorithm_cfg: dict) -> MoERoutingLossSpec:
-        """Build the MoE routing loss spec.
-
-        This spec has no env- or config-dependent fields; discard the unused constructor args.
-        """
-        del env, algorithm_cfg
-        return MoERoutingLossSpec()
+    loss_spec_class = MoERoutingLossSpec

@@ -172,3 +172,44 @@ class TestResolveClass:
         assert cfg["nested"]["std_type"] == "scalar"
         class_cfg["nested"]["std_type"] = "log"
         assert cfg["nested"]["std_type"] == "scalar"
+
+
+class TestResolveSpec:
+    """Tests for resolve_spec composition references."""
+
+    def test_none_returns_none(self) -> None:
+        from z_rl.utils import resolve_spec
+
+        assert resolve_spec(None) is None
+
+    def test_instance_returned_unchanged(self) -> None:
+        from z_rl.algorithms import MoERoutingLossSpec
+        from z_rl.utils import resolve_spec
+
+        spec = MoERoutingLossSpec(expert_balance_loss_coef=0.2)
+        assert resolve_spec(spec) is spec
+
+    def test_class_is_constructed(self) -> None:
+        from z_rl.algorithms import MoERoutingLossSpec
+        from z_rl.utils import resolve_spec
+
+        spec = resolve_spec(MoERoutingLossSpec)
+        assert isinstance(spec, MoERoutingLossSpec)
+        assert spec.expert_balance_loss_coef == 1.0e-4
+
+    def test_dict_uses_class_name(self) -> None:
+        from z_rl.algorithms import MoERoutingLossSpec
+        from z_rl.utils import resolve_spec
+
+        spec = resolve_spec({"class_name": "MoERoutingLossSpec", "gate_entropy_loss_coef": 0.5})
+        assert isinstance(spec, MoERoutingLossSpec)
+        assert spec.gate_entropy_loss_coef == 0.5
+
+    def test_simple_name_string(self) -> None:
+        from z_rl.models import MoEHeadSpec
+        from z_rl.utils import resolve_spec
+
+        spec = resolve_spec("MoEHeadSpec")
+        assert isinstance(spec, MoEHeadSpec)
+        assert spec.num_experts == 4
+

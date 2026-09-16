@@ -14,9 +14,9 @@ The core algorithm classes are:
 
 The preferred explicit extension path is now the composition API:
 
-- `composition/composable_ppo.py`: shared PPO builder plus thin subclass that applies configured loss specs
+- `composition/composable_ppo.py`: PPO that installs a `loss_spec` from config or `loss_spec_class`
 - `composition/specs.py`: contract for extra optimization or logging terms
-- `variants/`: concrete algorithm variants and their variant-specific loss specs
+- `variants/`: named presets (`MoEPPO`, `EncoderEstimationPPO`) and their loss specs
 
 ## Current Structure
 
@@ -110,22 +110,36 @@ Algorithm-specific behavior:
 
 `ComposablePPO` is the intended extension point for algorithm-side customization.
 
-Preferred extension is explicit:
+The user-facing unit is the loss spec. Config can point `ComposablePPO` at a spec without a named algorithm subclass:
 
 ```python
-from z_rl.algorithms.composition import ComposablePPO, PPOLossSpec
-
-
-class MyPPO(ComposablePPO):
-    @classmethod
-    def build_loss_spec(cls, env, algorithm_cfg) -> PPOLossSpec:
-        return MyAuxLossSpec(...)
+algorithm = {
+    "class_name": "ComposablePPO",
+    "loss_spec": {
+        "class_name": "MyAuxLossSpec",
+        "my_aux_loss_coef": 0.1,
+    },
+}
 ```
 
-The variant-owned loss spec implements:
+```python
+from dataclasses import dataclass
 
-- `validate(algo)`
-- `compute(algo, minibatch)`
+from z_rl.algorithms.composition import PPOLossSpec
+
+
+@dataclass
+class MyAuxLossSpec(PPOLossSpec):
+    my_aux_loss_coef: float = 0.1
+
+    def compute(self, algo, minibatch):
+        return {"my_aux_loss": ...}, {}
+```
+
+`PPOLossSpec` requires `compute(algo, minibatch)`. Optional:
+
+- `validate(algo)`: no-op by default
+- fields named `<loss_key>_coef`: copied onto the algorithm so `PPO.update()` can weight that extra loss
 
 Return:
 
@@ -137,15 +151,8 @@ Important contract:
 - keys in `opt_losses` are weighted in `PPO.update()` by an attribute named `<key>_coef` if it exists
 - custom loss keys must not collide with base PPO keys such as `surrogate_loss`, `value_loss`, or `entropy`
 
-This keeps the extension surface local to the actual customization and avoids requiring users to reason about multiple
-inheritance order.
-
-When creating a new PPO variant, the intended workflow is:
-
-- implement a `PPOLossSpec`
-- subclass `ComposablePPO`
-- override `build_loss_spec(env, algorithm_cfg)`
-- keep variant-specific spec classes in the same file as the variant unless they are shared across multiple variants
+Named presets (`MoEPPO`, `EncoderEstimationPPO`) set `loss_spec_class` so existing `class_name` values keep working.
+Subclass `ComposablePPO` only when the spec cannot express the behavior, for example a custom `act()`.
 
 The shared `ComposablePPO.construct_algorithm(...)` builder handles actor/critic/storage assembly so variants do not
 need to duplicate PPO construction boilerplate.
@@ -168,6 +175,6 @@ Use these files as the canonical examples:
 ## Maintenance Notes
 
 - Keep runner-facing method names aligned across algorithms so config-driven construction stays predictable.
-- Prefer extending PPO through `ComposablePPO` and `PPOLossSpec` instead of copying the whole class.
+- Prefer extending PPO by writing a `PPOLossSpec` and pointing `ComposablePPO` at it instead of copying the whole class.
 - If algorithm checkpoint keys change, update both this README and any runner or plugin template code that depends on
   them.

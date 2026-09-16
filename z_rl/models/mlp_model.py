@@ -13,6 +13,7 @@ from tensordict import TensorDict
 
 from z_rl.modules import MLP, EmpiricalNormalization, HiddenState
 from z_rl.modules.distribution import Distribution
+from z_rl.models.composition.adapters import ObsLatentAdapter
 from z_rl.utils import ObsSelector, resolve_class, unpad_trajectories
 
 # IsaacLab normalization config classes become dictionaries before reaching core models; booleans preserve the
@@ -44,6 +45,7 @@ class MLPModel(nn.Module):
         obs_normalization: ObservationNormalizationConfig = False,
         distribution_cfg: dict | None = None,
         obs_group_time_slice_map: dict[str, dict[str, ObsSelector]] | None = None,
+        obs_format: dict[str, dict[str, tuple[int, ...]]] | None = None,
     ) -> None:
         """Initialize the MLP-based model.
 
@@ -59,14 +61,42 @@ class MLPModel(nn.Module):
             distribution_cfg: Configuration dictionary for the output distribution. If provided, the model outputs
                 stochastic values sampled from the distribution.
             obs_group_time_slice_map: Cached time-slice metadata, typically from ``VecEnv.obs_group_time_slice_map``.
+            obs_format: Cached per-group term shapes, typically from ``VecEnv.obs_format``.
         """
         super().__init__()
 
-        self._init_observation_pipeline(obs, obs_groups, obs_set, obs_normalization, obs_group_time_slice_map)
-        self.distribution, head_output_dim = self._build_distribution(output_dim, distribution_cfg)
+        # Observation related attributes
+        self.obs_groups = obs_groups[obs_set]
+        self.obs_dim = 0
+        for obs_group in self.obs_groups:
+            if len(obs[obs_group].shape) != 2:
+                raise ValueError(
+                    f"The MLP model only supports 1D observations, got shape {obs[obs_group].shape} for '{obs_group}'."
+                )
+            self.obs_dim += obs[obs_group].shape[-1]
+        self.obs_group_dims = tuple(int(obs[group].shape[-1]) for group in self.obs_groups)
+        self.input_dim = self.obs_dim
+        self.obs_group_time_slice_map = obs_group_time_slice_map or {}
+        self.obs_format = obs_format or {}
+        self.obs_normalization = obs_normalization
+        if not hasattr(self, "latent_dim"):
+            self.latent_dim = self.obs_dim
+
+        # Distribution initialization
+        if distribution_cfg is None:
+            self.distribution = None
+            head_output_dim = output_dim
+        else:
+            dist_class, dist_cfg = resolve_class(distribution_cfg)
+            self.distribution: Distribution = dist_class(output_dim, **dist_cfg)  # type: ignore[assignment]
+            head_output_dim = self.distribution.input_dim
+
+        # Build the latent adapter and head
         self.latent_adapter = self.build_latent_adapter()
-        self.head = self.build_head(self.get_latent_dim(), head_output_dim, hidden_dims, activation)
-        self.init_head_weights()
+        self._update_normalization = getattr(self.latent_adapter, "update_normalization", None)
+        self.head = self.build_head(self.latent_dim, head_output_dim, hidden_dims, activation)
+        if self.distribution is not None:  # init distribution-specific weights in the Head module
+            self.distribution.init_head_weights(self.head)
 
     def forward(
         self,
@@ -129,11 +159,6 @@ class MLPModel(nn.Module):
         """Return the entropy of the current output distribution."""
         return self.distribution.entropy
 
-    @property
-    def output_distribution_params(self) -> tuple[torch.Tensor, ...]:
-        """Return raw parameters of the current output distribution."""
-        return self.distribution.params
-
     def get_output_log_prob(self, outputs: torch.Tensor) -> torch.Tensor:
         """Compute log-probabilities of outputs under the current distribution."""
         return self.distribution.log_prob(outputs)
@@ -150,64 +175,19 @@ class MLPModel(nn.Module):
 
     def update_normalization(self, obs: TensorDict) -> None:
         """Update observation-normalization statistics from a batch of observations."""
-        update = getattr(self.latent_adapter, "update_normalization", None)
-        if update is not None:
-            update(obs)
-
-    def _get_obs_dim(self, obs: TensorDict, obs_groups: dict[str, list[str]], obs_set: str) -> tuple[list[str], int]:
-        """Select active observation groups and compute observation dimension."""
-        active_obs_groups = obs_groups[obs_set]
-        obs_dim = 0
-        for obs_group in active_obs_groups:
-            if len(obs[obs_group].shape) != 2:
-                raise ValueError(
-                    f"The MLP model only supports 1D observations, got shape {obs[obs_group].shape} for '{obs_group}'."
-                )
-            obs_dim += obs[obs_group].shape[-1]
-        return active_obs_groups, obs_dim
-
-    def get_latent_dim(self) -> int:
-        """Return the latent dimensionality consumed by the model head."""
-        return self.obs_dim
-
-    def _init_observation_pipeline(
-        self,
-        obs: TensorDict,
-        obs_groups: dict[str, list[str]],
-        obs_set: str,
-        obs_normalization: ObservationNormalizationConfig,
-        obs_group_time_slice_map: dict[str, dict[str, ObsSelector]] | None,
-    ) -> None:
-        """Resolve observation metadata and build the normalization stage."""
-        self.obs_groups, self.obs_dim = self._get_obs_dim(obs, obs_groups, obs_set)
-        self.input_dim = self.obs_dim
-        self.obs_group_time_slice_map = obs_group_time_slice_map or {}
-        self.obs_normalization = obs_normalization
-
-    def _build_obs_normalizer(self, obs_normalization: ObservationNormalizationConfig) -> nn.Module:
-        """Build the observation normalizer used before latent construction."""
-        if obs_normalization is False:
-            return torch.nn.Identity()
-        normalization_cfg = {} if obs_normalization is True else obs_normalization
-        return EmpiricalNormalization(self.obs_dim, **normalization_cfg)
-
-    def _build_distribution(
-        self, output_dim: int, distribution_cfg: dict | None
-    ) -> tuple[Distribution | None, int | list[int]]:
-        """Build the optional output distribution and return its required head output dimension."""
-        if distribution_cfg is None:
-            return None, output_dim
-
-        dist_class, dist_cfg = resolve_class(distribution_cfg)
-        distribution: Distribution = dist_class(output_dim, **dist_cfg)  # type: ignore[assignment]
-        return distribution, distribution.input_dim
+        if self._update_normalization is not None:
+            self._update_normalization(obs)
 
     def build_latent_adapter(self) -> nn.Module:
         """Build the latent adapter that maps observations to the head input."""
-        return _FlatNormalizedLatentAdapter(
+        if self.obs_normalization is False:
+            obs_normalizer: nn.Module = nn.Identity()
+        else:
+            normalization_cfg = {} if self.obs_normalization is True else self.obs_normalization
+            obs_normalizer = EmpiricalNormalization(self.obs_dim, **normalization_cfg)
+        return ObsLatentAdapter(
             obs_groups=self.obs_groups,
-            obs_dim=self.obs_dim,
-            obs_normalizer=self._build_obs_normalizer(self.obs_normalization),
+            obs_normalizer=obs_normalizer,
         )
 
     def build_head(
@@ -217,61 +197,10 @@ class MLPModel(nn.Module):
         # When use_muon=True, hidden layers use Muon; input/output linear layers stay on AdamW.
         return MLP(input_dim, output_dim, hidden_dims, activation, first_non_muon=True, last_non_muon=True)
 
-    def init_head_weights(self) -> None:
-        """Initialize distribution-specific head weights after head construction."""
-        if self.distribution is not None:
-            self.distribution.init_head_weights(self.head)
-
-    @property
-    def obs_normalizer(self) -> nn.Module:
-        """Return the normalizer owned by the latent adapter, when present."""
-        normalizer = getattr(self.latent_adapter, "obs_normalizer", None)
-        if normalizer is None:
-            raise AttributeError(f"{type(self.latent_adapter).__name__} does not expose 'obs_normalizer'.")
-        return normalizer
-
 
 """
 Export Utils
 """
-
-
-class _FlatNormalizedLatentAdapter(nn.Module):
-    """Default latent adapter: active obs groups -> flat tensor -> optional normalization."""
-
-    def __init__(self, obs_groups: list[str], obs_dim: int, obs_normalizer: nn.Module) -> None:
-        super().__init__()
-        self.obs_groups = obs_groups
-        self.obs_dim = obs_dim
-        self.obs_normalizer = obs_normalizer
-
-    def forward(self, obs: TensorDict) -> torch.Tensor:
-        """Concatenate configured observation groups and normalize the flat tensor."""
-        return self.obs_normalizer(self._flatten_obs(obs))
-
-    def update_normalization(self, obs: TensorDict) -> None:
-        """Update running normalization statistics from structured observations."""
-        if isinstance(self.obs_normalizer, EmpiricalNormalization):
-            self.obs_normalizer.update(self._flatten_obs(obs))
-
-    def as_export_module(self) -> nn.Module:
-        """Return a tensor-only latent adapter for ONNX export."""
-        return _FlatNormalizedLatentAdapterExporter(copy.deepcopy(self.obs_normalizer))
-
-    def _flatten_obs(self, obs: TensorDict) -> torch.Tensor:
-        return torch.cat([obs[obs_group] for obs_group in self.obs_groups], dim=-1)
-
-
-class _FlatNormalizedLatentAdapterExporter(nn.Module):
-    """Tensor-only export module for the default latent adapter."""
-
-    def __init__(self, obs_normalizer: nn.Module) -> None:
-        super().__init__()
-        self.obs_normalizer = obs_normalizer
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Normalize a pre-concatenated observation tensor."""
-        return self.obs_normalizer(x)
 
 
 def _as_export_latent_adapter(latent_adapter: nn.Module) -> nn.Module:

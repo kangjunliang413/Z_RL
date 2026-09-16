@@ -99,9 +99,9 @@ z-rl-plugin-init
 
 This creates a minimal package scaffold containing:
 
-- custom algorithm mixin example (`MyPPO`)
-- custom model mixin examples
-- plugin-side IsaacLab config classes (`rl_cfg.py`)
+- a custom `PPOLossSpec` example
+- custom `LatentSpec` / `HeadSpec` examples
+- plugin-side IsaacLab config classes that point `ComposablePPO` / `ComposableModel` at those specs (`rl_cfg.py`)
 
 ```
 .
@@ -110,7 +110,7 @@ This creates a minimal package scaffold containing:
 └── z_rl_plugin_example
     ├── algorithms
     │   ├── __init__.py
-    │   └── my_ppo.py
+    │   └── my_loss.py
     ├── __init__.py
     ├── models
     │   ├── __init__.py
@@ -121,7 +121,7 @@ This creates a minimal package scaffold containing:
 
 ```
 
-Implement your mixins, then install your plugin in editable mode:
+Implement your specs, then install your plugin in editable mode:
 
 ```bash
 cd my_zrl_plugin
