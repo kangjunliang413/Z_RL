@@ -8,13 +8,18 @@
 from .composition import ComposableModel, GroupObsLatentAdapter, ObsLatentAdapter, HeadSpec, LatentSpec
 from .mlp_model import MLPModel
 from .variants import (
-    EncoderMLPModel,
-    MLPEncoderLatentSpec,
-    MoEHeadSpec,
+    CNNModel,
+    GroupMLPEncoderModel,
+    MLPEncoderModel,
     MoEModel,
+    RNNModel,
+    SimBaModel,
 )
-from .rnn_model import RNNModel
-from .cnn_model import CNNModel
+from .variants.cnn_model import CNNLatentSpec
+from .variants.group_mlp_encoder_model import GroupMLPLatentSpec
+from .variants.mlp_encoder_model import MLPEncoderLatentSpec
+from .variants.moe_model import MoEHeadSpec
+from .variants.simba_model import SimBaHeadSpec
 
 
 __all__ = [
@@ -24,10 +29,15 @@ __all__ = [
     "GroupObsLatentAdapter",
     "LatentSpec",
     "HeadSpec",
-    "EncoderMLPModel",
+    "CNNLatentSpec",
+    "CNNModel",
+    "MLPEncoderModel",
+    "GroupMLPEncoderModel",
+    "GroupMLPLatentSpec",
     "MLPEncoderLatentSpec",
     "MoEHeadSpec",
     "MoEModel",
     "RNNModel",
-    "CNNModel",
+    "SimBaHeadSpec",
+    "SimBaModel",
 ]

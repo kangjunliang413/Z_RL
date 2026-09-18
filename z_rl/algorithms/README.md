@@ -56,6 +56,7 @@ Main responsibilities of `PPO`:
 - updates observation normalizers once per learning iteration after the optimizer step, using stored rollout observations
 - optionally runs the forward pass and loss computation in bfloat16 mixed precision
 - optionally adapts the learning rate based on KL divergence
+- reports policy KL, PPO clip fraction, and critic explained variance
 - optionally integrates symmetry augmentation / mirror loss through `symmetry_cfg`
 - supports multi-GPU gradient averaging through `reduce_parameters()`
 - keeps `class_name` and other constructor keys in the original training config so loggers can record them
@@ -103,7 +104,7 @@ Shared behavior:
 
 Algorithm-specific behavior:
 
-- `PPO` resolves symmetry configuration and may share CNN encoders from actor to critic
+- `PPO` resolves symmetry configuration
 - `Distillation` forbids symmetry extensions and builds separate `student` / `teacher` models
 
 ## PPO Extension Design

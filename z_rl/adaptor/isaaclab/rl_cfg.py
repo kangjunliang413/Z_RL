@@ -109,8 +109,12 @@ class ZRlComposableModelCfg(ZRlMLPModelCfg):
 
 
 @configclass
-class ZRlRNNModelCfg(ZRlMLPModelCfg):
-    """Configuration for RNN model."""
+class ZRlRNNModelCfg(ZRlComposableModelCfg):
+    """Configuration for RNN model.
+
+    RNN is the recurrent backbone. Optional ``latent_spec`` / ``head_spec`` compose vision
+    encoding or a custom head, for example ``CNNLatentSpec`` for CNN+RNN visual distillation.
+    """
 
     class_name: str = "RNNModel"
     """The model class name. Defaults to RNNModel."""
@@ -123,6 +127,54 @@ class ZRlRNNModelCfg(ZRlMLPModelCfg):
 
     rnn_num_layers: int = MISSING
     """The number of RNN layers."""
+
+
+@configclass
+class ZRlGroupMLPEncoderModelCfg(ZRlComposableModelCfg):
+    """Configuration for the per-observation-group MLP encoder model."""
+
+    class_name: str = "GroupMLPEncoderModel"
+    """The model class name. Defaults to GroupMLPEncoderModel."""
+
+    encoder_cfgs: dict[str, dict] = MISSING
+    """Per-group encoder settings keyed by observation group name.
+
+    For example::
+
+        encoder_cfgs = {
+            "proprio": {
+                "output_dim": 128,
+                "hidden_dims": [256],
+                "activation": "elu",
+            },
+            "object": {
+                "output_dim": 64,
+                "hidden_dims": [128],
+            },
+        }
+
+    Every active observation group must be configured with an ``output_dim``.
+    """
+
+
+@configclass
+class ZRlSimBaModelCfg(ZRlComposableModelCfg):
+    """Configuration for the SimBaV2 output-head model."""
+
+    class_name: str = "SimBaModel"
+    """The model class name. Defaults to SimBaModel."""
+
+    hidden_dim: int = 512
+    """The hidden dimension of each SimBa block."""
+
+    num_blocks: int = 2
+    """The number of SimBa residual blocks."""
+
+    expansion: int = 4
+    """The expansion factor used inside each SimBa block."""
+
+    c_shift: float = 3.0
+    """The hyperspherical residual shift."""
 
 
 @configclass
@@ -170,11 +222,11 @@ class ZRlMoEModelCfg:
 
 
 @configclass
-class ZRlEncoderMLPModelCfg(ZRlMLPModelCfg):
+class ZRlMLPEncoderModelCfg(ZRlMLPModelCfg):
     """Configuration for encoder-based MLP model."""
 
-    class_name: str = "EncoderMLPModel"
-    """The model class name. Defaults to EncoderMLPModel."""
+    class_name: str = "MLPEncoderModel"
+    """The model class name. Defaults to MLPEncoderModel."""
 
     encoder_latent_dim: int = 128
     """The latent dimension produced by the encoder branch."""
@@ -191,10 +243,13 @@ class ZRlEncoderMLPModelCfg(ZRlMLPModelCfg):
 
 @configclass
 class ZRlCNNModelCfg(ZRlMLPModelCfg):
-    """Configuration for CNN model."""
+    """Configuration for a CNN encoder over a single 2D observation group."""
 
     class_name: str = "CNNModel"
     """The model class name. Defaults to CNNModel."""
+
+    image_obs_group: str = MISSING
+    """The 2D observation group encoded by the CNN."""
 
     @configclass
     class CNNCfg:
@@ -251,6 +306,9 @@ class ZRlCNNModelCfg(ZRlMLPModelCfg):
     cnn_init_weights: bool = False
     """Optional do Kaiming initialization to cnns."""
 
+    concat_last_obs: bool = False
+    """Whether to concatenate the last policy observation frame to the encoded latent. Defaults to False."""
+
 
 ############################
 # Algorithm configurations #
@@ -302,6 +360,9 @@ class ZRlPpoAlgorithmCfg:
     that provides ``torch.optim.Muon`` (approximately 2.9+). When enabled, ``optimizer`` is ignored.
     """
 
+    muon_adamw_weight_decay: float = 0.01
+    """AdamW weight decay used by the non-Muon parameter group when ``use_muon`` is enabled."""
+
     value_loss_coef: float = MISSING
     """The coefficient for the value loss."""
 
@@ -319,7 +380,7 @@ class ZRlPpoAlgorithmCfg:
     """
 
     share_cnn_encoders: bool = False
-    """Whether to share the CNN networks between actor and critic, in case CNNModels are used. Defaults to False."""
+    """Deprecated. Actor and critic each build their own CNN encoder. Must stay False."""
 
     use_mixed_precision: bool = False
     """Whether to run the forward pass and loss computation in bfloat16 autocast. Defaults to False.

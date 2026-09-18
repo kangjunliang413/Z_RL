@@ -34,13 +34,16 @@ class MLPEncoderLatentSpec(LatentSpec):
 
     def build(self, model: nn.Module) -> nn.Module:
         append_obs = None
+        # whether to append the last observation of the policy group
         if self.concat_last_obs:
             append_obs = resolve_obs_temporal_selector("policy", "last", model.obs_group_time_slice_map)
+        # build obs normalizers
         if model.obs_normalization is False:
             obs_normalizer: nn.Module = nn.Identity()
         else:
             normalization_cfg = {} if model.obs_normalization is True else model.obs_normalization
             obs_normalizer = EmpiricalNormalization(model.obs_dim, **normalization_cfg)
+        # return obs adapter
         return ObsLatentAdapter(
             obs_groups=model.obs_groups,
             obs_normalizer=obs_normalizer,
@@ -56,7 +59,7 @@ class MLPEncoderLatentSpec(LatentSpec):
         ).dim
 
 
-class EncoderMLPModel(ComposableModel):
+class MLPEncoderModel(ComposableModel):
     """Named preset that installs ``MLPEncoderLatentSpec``."""
 
     latent_spec_class = MLPEncoderLatentSpec

@@ -16,7 +16,7 @@ import onnx
 import pytest
 
 from tests.conftest import make_obs
-from z_rl.models import EncoderMLPModel, GroupObsLatentAdapter, MLPModel, ObsLatentAdapter
+from z_rl.models import GroupObsLatentAdapter, MLPEncoderModel, MLPModel, ObsLatentAdapter
 from z_rl.modules import EmpiricalNormalization
 from z_rl.utils import ObsSelector
 
@@ -159,7 +159,7 @@ class TestEncoderSpec:
     def test_encoder_replaces_policy_latent(self) -> None:
         """The latent adapter should replace the normalized policy latent with the encoder output."""
         obs = TensorDict({"policy": torch.ones(2, 8) * 2}, batch_size=[2])
-        model = EncoderMLPModel(
+        model = MLPEncoderModel(
             obs,
             {"actor": ["policy"]},
             "actor",
@@ -179,7 +179,7 @@ class TestEncoderSpec:
         """The latent adapter should append the last policy frame when configured."""
         obs = TensorDict({"policy": torch.arange(16, dtype=torch.float32).view(2, 8)}, batch_size=[2])
         time_slice_map = {"policy": {"last": slice(6, 8)}}
-        model = EncoderMLPModel(
+        model = MLPEncoderModel(
             obs,
             {"actor": ["policy"]},
             "actor",
@@ -204,7 +204,7 @@ class TestEncoderSpec:
         obs = TensorDict({"group_a": torch.ones(2, 3), "policy": torch.ones(2, 2)}, batch_size=[2])
 
         with pytest.raises(ValueError, match="exactly one active observation group named 'policy'"):
-            EncoderMLPModel(
+            MLPEncoderModel(
                 obs,
                 {"actor": ["group_a", "policy"]},
                 "actor",
@@ -277,7 +277,7 @@ class TestMLPModelExport:
     def test_onnx_export_with_encoder_spec(self) -> None:
         """ONNX export should include encoder-spec latent adapters without custom wrappers."""
         obs = make_obs(NUM_ENVS, OBS_DIM)
-        model = EncoderMLPModel(
+        model = MLPEncoderModel(
             obs,
             OBS_GROUPS,
             "actor",

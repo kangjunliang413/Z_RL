@@ -59,6 +59,7 @@ class PPO:
         max_grad_norm: float = 1.0,
         optimizer: str = "adam",
         use_muon: bool = False,  # Muon for hidden 2-D weights; AdamW for biases/heads/std (see utils.opt)
+        muon_adamw_weight_decay: float = 0.01,
         use_clipped_value_loss: bool = True,
         schedule: str = "adaptive",
         desired_kl: float = 0.01,
@@ -112,7 +113,9 @@ class PPO:
         # Create the optimizer. Muon is not a full-model optimizer: hidden 2-D weights use Muon,
         # while biases, std parameters, and input/output layers stay on AdamW via MuonAdamWWrapper.
         if use_muon:
-            self.optimizer = MuonAdamWWrapper([self.actor, self.critic], lr=learning_rate)
+            self.optimizer = MuonAdamWWrapper(
+                [self.actor, self.critic], lr=learning_rate, weight_decay=muon_adamw_weight_decay
+            )
         else:
             self.optimizer = resolve_optimizer(optimizer)(
                 chain(self.actor.parameters(), self.critic.parameters()), lr=learning_rate
@@ -248,6 +251,14 @@ class PPO:
         if mirror_loss_metric is not None:
             mean_losses["mirror_loss_detach"] = mirror_loss_metric
 
+        with torch.no_grad():
+            values = self.storage.values.flatten()
+            returns = self.storage.returns.flatten()
+            # 1 means perfect value prediction, 0 matches a constant baseline, and negative values are worse.
+            mean_losses["explained_variance"] = 1.0 - (returns - values).var(unbiased=False) / (
+                returns.var(unbiased=False) + 1e-8
+            )
+
         # Update the normalizers from the collected rollout after optimization
         obs = self.storage.observations.flatten(0, 1)
         self.actor.update_normalization(obs)
@@ -282,17 +293,17 @@ class PPO:
         distribution_params = tuple(p[:original_batch_size] for p in self.actor.distribution.params)
         entropy = self.actor.output_entropy[:original_batch_size]
 
-        # Compute KL divergence and adapt the learning rate
-        if self.desired_kl is not None and self.schedule == "adaptive":
-            with torch.inference_mode():
-                kl = self.actor.get_kl_divergence(minibatch.old_distribution_params, distribution_params)  # type: ignore
-                kl_mean = torch.mean(kl)
+        # Compute KL divergence for diagnostics and adaptive learning-rate scheduling
+        with torch.inference_mode():
+            kl = self.actor.get_kl_divergence(minibatch.old_distribution_params, distribution_params)  # type: ignore
+            kl_mean = torch.mean(kl)
 
-                # Reduce the KL divergence across all GPUs
-                if self.is_multi_gpu:
-                    torch.distributed.all_reduce(kl_mean, op=torch.distributed.ReduceOp.SUM)
-                    kl_mean /= self.gpu_world_size
+            # Reduce the KL divergence across all GPUs
+            if self.is_multi_gpu:
+                torch.distributed.all_reduce(kl_mean, op=torch.distributed.ReduceOp.SUM)
+                kl_mean /= self.gpu_world_size
 
+            if self.desired_kl is not None and self.schedule == "adaptive":
                 # Update the learning rate only on the main process
                 if self.gpu_global_rank == 0:
                     if kl_mean > self.desired_kl * 2.0:
@@ -333,7 +344,10 @@ class PPO:
             value_loss=value_loss,
             entropy=-entropy.mean(),
         )
-        non_opt_losses = dict()
+        non_opt_losses = dict(
+            clip_fraction=((ratio - 1.0).abs() > self.clip_param).float().mean(),
+            kl=kl_mean,
+        )
 
         # Symmetry loss
         if self._use_mirror_loss:
@@ -457,8 +471,10 @@ class PPO:
         # Initialize the policy
         actor: MLPModel = actor_class(obs, cfg["obs_groups"], "actor", env.num_actions, **actor_cfg).to(device)
         print(f"Actor Model: {actor}")
-        if alg_cfg.pop("share_cnn_encoders", None):  # Share CNN encoders between actor and critic
-            critic_cfg["cnns"] = actor.cnns  # type: ignore
+        if alg_cfg.pop("share_cnn_encoders", None):
+            raise ValueError(
+                "share_cnn_encoders is no longer supported; actor and critic each build their own CNN encoder."
+            )
         critic: MLPModel = critic_class(obs, cfg["obs_groups"], "critic", 1, **critic_cfg).to(device)
         print(f"Critic Model: {critic}")
 
@@ -472,11 +488,11 @@ class PPO:
             print(f"Critic Head uses orthogonal init: {critic_init_weights}")
         # Initialize CNN weights if configured
         if actor_cnn_init_weights:
-            actor.init_cnn_weights()
-            print(f"Actor CNNs use kaiming init")
+            actor.latent_adapter.cnn.init_cnn_weights()
+            print("Actor CNNs use kaiming init")
         if critic_cnn_init_weights:
-            critic.init_cnn_weights()
-            print(f"Critic CNNs use kaiming init")
+            critic.latent_adapter.cnn.init_cnn_weights()
+            print("Critic CNNs use kaiming init")
         print("-" * 80)
 
         # Initialize the storage

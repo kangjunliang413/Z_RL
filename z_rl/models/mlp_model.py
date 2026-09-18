@@ -28,7 +28,7 @@ class MLPModel(nn.Module):
 
     The default latent adapter preserves the historical behavior by concatenating active 1D observation groups and
     optionally normalizing them. Custom latent adapters may instead consume the structured TensorDict directly before
-    returning the latent tensor consumed by the head.
+    returning the latent tensor consumed by the head. Image groups are allowed only when a `latent_spec` consumes them.
     """
 
     is_recurrent: bool = False
@@ -67,14 +67,23 @@ class MLPModel(nn.Module):
 
         # Observation related attributes
         self.obs_groups = obs_groups[obs_set]
+        self.obs_group_shapes = {group: tuple(obs[group].shape[1:]) for group in self.obs_groups}
+        allow_image_groups = getattr(self, "latent_spec", None) is not None
         self.obs_dim = 0
+        vector_dims: list[int] = []
         for obs_group in self.obs_groups:
-            if len(obs[obs_group].shape) != 2:
+            ndim = len(obs[obs_group].shape)
+            if ndim == 2:
+                group_dim = int(obs[obs_group].shape[-1])
+                self.obs_dim += group_dim
+                vector_dims.append(group_dim)
+            elif ndim == 4 and allow_image_groups:
+                continue
+            else:
                 raise ValueError(
                     f"The MLP model only supports 1D observations, got shape {obs[obs_group].shape} for '{obs_group}'."
                 )
-            self.obs_dim += obs[obs_group].shape[-1]
-        self.obs_group_dims = tuple(int(obs[group].shape[-1]) for group in self.obs_groups)
+        self.obs_group_dims = tuple(vector_dims)
         self.input_dim = self.obs_dim
         self.obs_group_time_slice_map = obs_group_time_slice_map or {}
         self.obs_format = obs_format or {}
@@ -179,7 +188,9 @@ class MLPModel(nn.Module):
             self._update_normalization(obs)
 
     def build_latent_adapter(self) -> nn.Module:
-        """Build the latent adapter that maps observations to the head input."""
+        """Build the latent adapter that maps observations to the head input.
+        This barely concatenates and normalizes observation groups.
+        """
         if self.obs_normalization is False:
             obs_normalizer: nn.Module = nn.Identity()
         else:
@@ -193,7 +204,9 @@ class MLPModel(nn.Module):
     def build_head(
         self, input_dim: int, output_dim: int | list[int], hidden_dims: tuple[int, ...] | list[int], activation: str
     ) -> nn.Module:
-        """Build the output head that consumes the model latent."""
+        """Build the output head that consumes the model latent.
+        This is a simple MLP network.
+        """
         # When use_muon=True, hidden layers use Muon; input/output linear layers stay on AdamW.
         return MLP(input_dim, output_dim, hidden_dims, activation, first_non_muon=True, last_non_muon=True)
 
@@ -229,21 +242,27 @@ class _OnnxMLPModel(nn.Module):
         else:
             self.deterministic_output = nn.Identity()
         self.input_size = model.obs_dim
+        export_dummy_inputs = getattr(model.latent_adapter, "export_dummy_inputs", None)
+        export_input_names = getattr(model.latent_adapter, "export_input_names", None)
+        self._dummy_inputs = (
+            export_dummy_inputs() if export_dummy_inputs is not None else (torch.zeros(1, self.input_size),)
+        )
+        self._input_names = list(export_input_names()) if export_input_names is not None else ["obs"]
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, *obs: torch.Tensor) -> torch.Tensor:
         """Run deterministic inference for ONNX export."""
-        latent = self.latent_adapter(x)
+        latent = self.latent_adapter(*obs)
         out = self.head(latent)
         return self.deterministic_output(out)
 
-    def get_dummy_inputs(self) -> tuple[torch.Tensor]:
+    def get_dummy_inputs(self) -> tuple[torch.Tensor, ...]:
         """Return representative dummy inputs for ONNX tracing."""
-        return (torch.zeros(1, self.input_size),)
+        return self._dummy_inputs
 
     @property
     def input_names(self) -> list[str]:
         """Return ONNX input tensor names."""
-        return ["obs"]
+        return self._input_names
 
     @property
     def output_names(self) -> list[str]:

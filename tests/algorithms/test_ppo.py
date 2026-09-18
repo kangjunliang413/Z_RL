@@ -51,6 +51,8 @@ class _StaticBatchStorage:
         self.clear_calls = 0
         # PPO.update() refreshes normalizers from stored rollouts after optimization.
         self.observations = batch.observations.unsqueeze(0)
+        self.values = torch.zeros(1, batch.observations.batch_size[0], 1)
+        self.returns = torch.ones_like(self.values)
 
     def mini_batch_generator(self, num_mini_batches: int, num_epochs: int) -> Iterator[object]:
         assert num_mini_batches * num_epochs == self.num_batches
@@ -122,6 +124,15 @@ def test_symmetry_augmentation_is_the_authoritative_rollout_switch() -> None:
 
     assert ppo._use_symmetry_augmentation
     assert ppo.symmetry._batch_is_augmented
+
+
+def test_muon_adamw_weight_decay_is_forwarded() -> None:
+    if not hasattr(torch.optim, "Muon"):
+        return
+    ppo, _ = _build_ppo(use_muon=True, muon_adamw_weight_decay=0.123)
+    adamw = next(optimizer for optimizer in ppo.optimizer.optimizers if isinstance(optimizer, torch.optim.AdamW))
+
+    assert adamw.defaults["weight_decay"] == 0.123
 
 
 class TestMirrorMetricScheduling:
@@ -335,6 +346,32 @@ class TestTimeoutBootstrapping:
 
 class TestPPOLosses:
     """Tests for PPO loss computation correctness."""
+
+    def test_update_reports_policy_and_value_diagnostics(self) -> None:
+        """Diagnostics should be finite even when KL scheduling is disabled."""
+        ppo, obs = _build_ppo(schedule="fixed")
+        for _ in range(NUM_STEPS):
+            ppo.act(obs)
+            ppo.process_env_step(obs, torch.randn(NUM_ENVS), torch.zeros(NUM_ENVS), {})
+        ppo.compute_returns(obs)
+
+        metrics = ppo.update()
+
+        for key in ("clip_fraction", "kl", "explained_variance"):
+            assert key in metrics
+            assert torch.isfinite(metrics[key])
+        assert 0.0 <= metrics["clip_fraction"] <= 1.0
+        assert metrics["kl"] >= 0.0
+
+    def test_explained_variance_uses_complete_rollout(self) -> None:
+        ppo, obs = _build_ppo()
+        storage = _prepare_metric_only_update(ppo, obs)
+        storage.values = torch.tensor([[[1.0], [2.0], [3.0], [4.0]]])
+        storage.returns = torch.tensor([[[1.0], [3.0], [5.0], [7.0]]])
+
+        metrics = ppo.update()
+
+        assert torch.allclose(metrics["explained_variance"], torch.tensor(0.75))
 
     def test_surrogate_loss_clipping(self) -> None:
         """When ratio deviates beyond clip_param, the clipped branch should dominate."""

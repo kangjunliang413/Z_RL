@@ -43,10 +43,12 @@ def _apply_model_init_config(
         print(f"{model_name} Head uses orthogonal init: {init_weights}")
 
     if cnn_init_weights:
-        if not hasattr(model, "cnns"):
-            raise ValueError(f"{model_name} received cnn_init_weights=True but the model does not define CNN encoders.")
-        for cnn in model.cnns.values():  # type: ignore[attr-defined]
-            cnn.init_cnn_weights()
+        cnn = getattr(getattr(model, "latent_adapter", None), "cnn", None)
+        if cnn is None or not hasattr(cnn, "init_cnn_weights"):
+            raise ValueError(
+                f"{model_name} received cnn_init_weights=True but the model does not define a CNN encoder."
+            )
+        cnn.init_cnn_weights()
         print(f"{model_name} CNNs use kaiming init")
 
 

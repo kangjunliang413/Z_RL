@@ -1,11 +1,17 @@
 """Predefined model variants."""
 
-from .encoder_mlp_model import EncoderMLPModel, MLPEncoderLatentSpec
-from .moe_model import MoEHeadSpec, MoEModel
+from .cnn_model import CNNModel
+from .group_mlp_encoder_model import GroupMLPEncoderModel
+from .mlp_encoder_model import MLPEncoderModel
+from .moe_model import MoEModel
+from .rnn_model import RNNModel
+from .simba_model import SimBaModel
 
 __all__ = [
-    "EncoderMLPModel",
-    "MLPEncoderLatentSpec",
-    "MoEHeadSpec",
+    "CNNModel",
+    "MLPEncoderModel",
+    "GroupMLPEncoderModel",
     "MoEModel",
+    "RNNModel",
+    "SimBaModel",
 ]

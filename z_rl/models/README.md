@@ -1,57 +1,77 @@
 # Models
 
-This directory contains the model implementations used by Z-RL and the explicit composition API for latent/head customization.
+Runtime: `obs TensorDict -> latent adapter -> (RNN) -> head -> (distribution) -> output`.
 
-## Overview
+- `mlp_model.py`: `MLPModel` — concat 1D groups, optional normalize, MLP head.
+- `composition/`: `LatentSpec` / `HeadSpec`, `ComposableModel`, adapters.
+- `variants/`: named presets. A spec that only serves one preset lives next to it. Specs are re-exported from `z_rl.models` so `class_name` lookup works; `variants/__init__.py` only exports model classes.
 
-Main models:
+## Variants
 
-- `MLPModel`: base model for vector observations.
-- `RNNModel`: recurrent model built on top of the MLP pipeline.
-- `CNNModel`: model for mixed 1D/2D observations.
-- `ComposableModel`: thin `MLPModel` wrapper that accepts `latent_spec` and `head_spec`.
+| Preset | Role | Spec |
+| --- | --- | --- |
+| `RNNModel` | RNN between adapter and head | none; kwargs `rnn_type`, `rnn_hidden_dim`, `rnn_num_layers` |
+| `MLPEncoderModel` | MLP encoder latent | `MLPEncoderLatentSpec` |
+| `GroupMLPEncoderModel` | Per-group MLP latent | `GroupMLPLatentSpec` |
+| `CNNModel` | CNN latent | `CNNLatentSpec` |
+| `MoEModel` | MoE head | `MoEHeadSpec` |
+| `SimBaModel` | SimBaV2 hyperspherical head | `SimBaHeadSpec` |
 
-Predefined variants live in [`variants/`](https://github.com/syw-robotics/z_rl/tree/main/z_rl/models/variants):
+Preset kwargs that match spec fields are bound onto the spec. Specs also work on `ComposableModel` / `RNNModel` without the named preset.
 
-- `EncoderMLPModel`: `ComposableModel` variant with `MLPEncoderLatentSpec` as the latent stage.
-- `MoEModel`: `ComposableModel` variant whose head is replaced by a Mixture-of-Experts module. MoE head shape is controlled by `expert_hidden_dims` and `gate_hidden_dims`. This MoE implementation suppors the experts run **in parallel**. Pair it with `MoEPPO` to add expert-balance (and optional gate-entropy) routing regularizers.
-
-## Export Logic
-
-Z-RL keeps policy export ONNX-only. `MLPModel` export follows the runtime structure while using a tensor-only adapter:
+### RNNModel
 
 ```text
-flat ONNX input -> latent_adapter.as_export_module() -> head -> deterministic_output
+obs groups -> adapter / latent_spec -> RNN -> head
 ```
 
-Export entry points:
+RNN input width is the adapter output; the head consumes `rnn_hidden_dim`. ONNX is vector-obs only (`obs`, `h_in`, `c_in`) — extra tensors such as a CNN image are not packed.
 
-- `model.as_onnx(...)`
+### MLPEncoderModel
 
-Runtime latent adapters consume the structured observation `TensorDict`. If a custom adapter is not directly compatible
-with the flat tensor passed by ONNX export, implement `as_export_module()` on the adapter and return a tensor-only module.
+Requires a single `policy` group. Optional `concat_last_obs` appends the last policy frame (from `obs_group_time_slice_map`) after the encoder.
 
-## Composition API
+### CNNModel
 
-Preferred customization lives in [`composition/`](/home/syw/.gitrepos/z_rl/tree/main/z_rl/models/composition):
+One 2D group (`image_obs_group`) through a CNN; remaining groups must be 1D. Each group is normalized/encoded, then concatenated. No multi-2D groups, no actor/critic CNN sharing.
 
-- `composition/specs.py`: base classes `LatentSpec` and `HeadSpec`
-- `composition/composable_model.py`: `ComposableModel`
-- `composition/adapters.py`: `ObsLatentAdapter` (concat groups, one normalizer, one encoder) and
-  `GroupObsLatentAdapter` (per-group normalizer and encoder, then concat)
-- `variants/`: named presets and their variant-specific latent/head specs
+ONNX: 1D groups packed as `obs`, image stays at native rank.
 
-The user-facing unit is the spec. Config can point `ComposableModel` at a spec without a named model subclass:
+`CNNLatentSpec`: `image_obs_group`, `cnn_cfg` (flattened CNN output required), `cnn_projection_cfg`, `concat_last_obs`.
+
+### GroupMLPEncoderModel and SimBaModel
+
+`GroupMLPLatentSpec` encodes every active 1D observation group independently. Each entry in `encoder_cfgs` requires
+`output_dim` and optionally accepts `hidden_dims` and `activation`. Different groups may use different output widths.
+
+`SimBaHeadSpec` replaces the ordinary MLP head with a SimBaV2 hyperspherical residual network. It accepts
+`hidden_dim`, `num_blocks`, `expansion`, and `c_shift`. The specs can be composed without a dedicated actor-critic:
 
 ```python
-actor = {
-    "class_name": "ComposableModel",
-    "latent_spec": {"class_name": "MLPEncoderLatentSpec", "encoder_latent_dim": 128},
-    "head_spec": {"class_name": "MoEHeadSpec", "num_experts": 4, "expert_hidden_dims": [256]},
-}
+model = ComposableModel(
+    ...,
+    latent_spec={
+        "class_name": "GroupMLPLatentSpec",
+        "encoder_cfgs": {
+            "proprio": {"output_dim": 128, "hidden_dims": [256]},
+            "object": {"output_dim": 64, "hidden_dims": [128]},
+        },
+    },
+    head_spec={"class_name": "SimBaHeadSpec", "hidden_dim": 512, "num_blocks": 2, "expansion": 4},
+)
 ```
 
-Programmatic construction still accepts instances, classes, or the same config dicts:
+### MoEModel
+
+Dense MoE: every expert runs, the gate mixes. Compute scales with `num_experts`. Pair with `MoEPPO`.
+
+`MoEHeadSpec`: `num_experts`, `expert_hidden_dims`, `gate_hidden_dims` (`None` = linear gate).
+
+`MoERoutingLossSpec`: `expert_balance_loss` (KL to uniform, default `1e-4`), `gate_entropy_loss` (default `0`). At least one of actor/critic must have an MoE head.
+
+Pretrained experts load into `head.experts` only, never the gate. Use `pretrained_expert_path` **or** `pretrained_expert_specs`. Checkpoints may be a raw `state_dict` or wrapped under `actor_state_dict` / `state_dict`. MoE keys (`head.experts.weights.0`) and MLP heads (`head.0.weight`) are both accepted; MLP weights are transposed into the stacked `[E, in, out]` layout.
+
+## Specs
 
 ```python
 from z_rl.models import ComposableModel, MLPEncoderLatentSpec, MoEHeadSpec
@@ -63,32 +83,16 @@ model = ComposableModel(
 )
 ```
 
-`LatentSpec` requires `build(model)` and `get_latent_dim(model)`. Optional:
+Config form: `{"class_name": "MLPEncoderLatentSpec", ...}`. `RNNModel` can take `CNNLatentSpec` / `MoEHeadSpec` the same way.
 
-- `validate(model)`: no-op by default
+- `LatentSpec`: `build(model)`, `get_latent_dim(model)`; optional `validate`. Omit to keep `model.obs_dim`.
+- `HeadSpec`: `build(model, input_dim, output_dim, activation)`.
+- `ObsLatentAdapter`: concat → normalize → encode. `GroupObsLatentAdapter`: per-group then concat. Runtime `forward(obs: TensorDict)`. Implement `as_export_module()` for ONNX.
 
-The adapter returned by `build(model)` should implement `forward(obs: TensorDict)`. It may also implement
-`update_normalization(obs)` when it owns normalization statistics. Built-in adapters implement `as_export_module()` so
-training `forward` stays TensorDict-only.
+## Export
 
-Omit `latent_spec` to keep `model.obs_dim`.
+Entry point: `model.as_onnx(...)`. Training adapters take a `TensorDict`; export uses `as_export_module()` on a flat tensor. Non-vector ONNX inputs also need `export_dummy_inputs()` and `export_input_names()`.
 
-`HeadSpec` requires `build(model, input_dim, output_dim, activation)`. `validate(model)` is a no-op by default.
+## Maintenance
 
-If a latent spec changes the latent width, `ComposableModel` rebuilds the head with the new dimension.
-
-
-Variant-owned specs:
-
-- `models/variants/encoder_mlp_model.py`: `MLPEncoderLatentSpec` and `EncoderMLPModel`
-- `models/variants/moe_model.py`: `MoEHeadSpec` and `MoEModel`
-
-When a latent or head spec only serves one concrete model variant, keep that spec in the same variant module rather
-than under `composition/`.
-
-## Maintenance Notes
-
-- Keep runtime and export structure aligned.
-- Prefer adapter modules over ad-hoc `forward()` logic.
-- Keep normalization owned by the adapter that consumes the corresponding observations.
-- When changing composition contracts, update this README and `z_rl/cli/plugin_templates/models.py`.
+Keep runtime and export aligned. Normalization stays on the adapter that consumes those observations. Contract changes: this README and `z_rl/cli/plugin_templates/models.py`.

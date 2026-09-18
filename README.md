@@ -134,7 +134,8 @@ python -m pip install -e .
 - ✅ Added and tested `EncoderEstimationPPO` as a PPO extension example
 - ✅ Keep deployment/export ONNX-only and remove TorchScript export paths
 - ✅ Clarify latent adapter runtime/export contracts in model docs and plugin templates
-- ❌ Reorganize `RNNModel`/`CNNModel` further into the composable latent-adapter style
+- ✅ Reorganize `CNNModel` into `CNNLatentSpec` (single 2D observation group)
+- ✅ Make `RNNModel` a composable recurrent backbone (`CNNLatentSpec` for CNN+RNN)
 - ❌ Support multiple PPO loss specs for combining auxiliary objectives
 - ❌ Add ONNX deployment notes for MLP/RNN/CNN policies
 - ❌ Update tests after the adapter/export contract settles

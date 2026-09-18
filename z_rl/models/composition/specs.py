@@ -26,7 +26,10 @@ class LatentSpec(abc.ABC):
 
     @abc.abstractmethod
     def get_latent_dim(self, model: nn.Module) -> int:
-        """Return the latent dimensionality consumed by the model head."""
+        """Return the latent dimensionality consumed by the model head.
+
+        Invoked after ``build``, so implementations may read widths from constructed modules.
+        """
         raise NotImplementedError
 
 

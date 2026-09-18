@@ -22,6 +22,8 @@ class MyLatentSpec(LatentSpec):
     Use `ObsLatentAdapter` for concat-then-encode. Use `GroupObsLatentAdapter` when each
     observation group needs its own normalizer and encoder. Custom adapters should implement
     `as_export_module()`; runtime `forward` receives a TensorDict, ONNX receives a concat tensor.
+    Adapters with non-vector ONNX inputs should also implement `export_dummy_inputs()` and
+    `export_input_names()`.
     \"\"\"
 
     latent_dim: int = 128

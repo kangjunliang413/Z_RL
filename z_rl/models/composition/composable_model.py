@@ -55,8 +55,9 @@ class ComposableModel(MLPModel):
             return super().build_latent_adapter()
         # validate user specified safety checks
         self.latent_spec.validate(self)
+        adapter = self.latent_spec.build(self)
         self.latent_dim = self.latent_spec.get_latent_dim(self)
-        return self.latent_spec.build(self)
+        return adapter
 
     def build_head(
         self,

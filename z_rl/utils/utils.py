@@ -492,8 +492,8 @@ def spec_init_field_names(spec: object) -> set[str]:
 def bind_matching_fields(spec: object, cfg: dict, *, exclude: Iterable[str] = ()) -> None:
     """Move leftover config keys that match spec init fields onto the spec.
 
-    Named presets keep a flat constructor/config. ``EncoderMLPModel(..., encoder_latent_dim=128)`` and IsaacLab
-    ``ZRlEncoderMLPModelCfg.encoder_latent_dim`` are not ``MLPModel`` arguments; this copies them onto the latent
+    Named presets keep a flat constructor/config. ``MLPEncoderModel(..., encoder_latent_dim=128)`` and IsaacLab
+    ``ZRlMLPEncoderModelCfg.encoder_latent_dim`` are not ``MLPModel`` arguments; this copies them onto the latent
     spec before ``MLPModel.__init__`` sees the kwargs.
 
     The same flattening is used for algorithm configs: ``estimation_loss_coef`` sits next to PPO
