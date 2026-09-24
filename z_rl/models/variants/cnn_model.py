@@ -30,6 +30,7 @@ class CNNObsLatentAdapter(GroupObsLatentAdapter):
         encoders: Mapping[str, nn.Module],
         obs_normalizers: Mapping[str, nn.Module],
         append_obs: ObsSelector | None = None,
+        append_obs_group: str = "policy",
     ) -> None:
         super().__init__(
             obs_groups=obs_groups,
@@ -37,6 +38,7 @@ class CNNObsLatentAdapter(GroupObsLatentAdapter):
             encoders=encoders,
             obs_normalizers=obs_normalizers,
             append_obs=append_obs,
+            append_obs_group=append_obs_group,
         )
         self.image_obs_group = image_obs_group
         self.image_shape = image_shape
@@ -71,14 +73,16 @@ class CNNLatentSpec(LatentSpec):
     Set ``image_obs_group`` to the image group. Remaining groups must be 1D. Training uses
     :class:`~z_rl.models.composition.GroupObsLatentAdapter`: each group is normalized and encoded on
     its own, then concatenated. ``cnn_cfg`` is forwarded to :class:`~z_rl.modules.cnn.CNN`. Optional
-    ``cnn_projection_cfg`` maps flattened CNN features to a fixed width. ``concat_last_obs`` appends the
-    last ``policy`` frame after the encoded groups, matching ``MLPEncoderLatentSpec``.
+    ``cnn_projection_cfg`` maps flattened CNN features to a fixed width. ``append_last_obs`` appends the
+    last frame of ``append_obs_group`` (default ``policy``) after the encoded groups, matching
+    ``MLPEncoderLatentSpec``.
     """
 
     image_obs_group: str = ""
     cnn_cfg: dict[str, Any] = field(default_factory=dict)
     cnn_projection_cfg: dict[str, Any] | None = None
-    concat_last_obs: bool = False
+    append_last_obs: bool = False
+    append_obs_group: str = "policy"
     _cnn_latent_dim: int = field(init=False, repr=False, default=0)
 
     def validate(self, model: nn.Module) -> None:
@@ -111,11 +115,16 @@ class CNNLatentSpec(LatentSpec):
                 raise ValueError(
                     f"Non-CNN observation groups must be 1D, got shape {model.obs_group_shapes[name]} for '{name}'."
                 )
-        if self.concat_last_obs:
-            if "policy" not in model.obs_groups:
-                raise ValueError("`CNNLatentSpec.concat_last_obs` requires a 'policy' observation group.")
-            if self.image_obs_group == "policy":
-                raise ValueError("`CNNLatentSpec.concat_last_obs` cannot use the 2D image group as 'policy'.")
+        if self.append_last_obs:
+            if self.append_obs_group not in model.obs_groups:
+                raise ValueError(
+                    f"`CNNLatentSpec.append_last_obs` requires a '{self.append_obs_group}' observation group."
+                )
+            if self.image_obs_group == self.append_obs_group:
+                raise ValueError(
+                    "`CNNLatentSpec.append_last_obs` cannot use the 2D image group "
+                    f"as '{self.append_obs_group}'."
+                )
 
     def build(self, model: nn.Module) -> nn.Module:
         """Build a group adapter with a CNN encoder on the specified 2D observation group."""
@@ -148,8 +157,10 @@ class CNNLatentSpec(LatentSpec):
                 normalizers[name] = EmpiricalNormalization(dim, **normalization_cfg)
             group_dims.append(dim)
         append_obs = None
-        if self.concat_last_obs:
-            append_obs = resolve_obs_temporal_selector("policy", "last", model.obs_group_time_slice_map)
+        if self.append_last_obs:
+            append_obs = resolve_obs_temporal_selector(
+                self.append_obs_group, "last", model.obs_group_time_slice_map
+            )
         return CNNObsLatentAdapter(
             image_obs_group=self.image_obs_group,
             image_shape=tuple(int(v) for v in model.obs_group_shapes[self.image_obs_group]),
@@ -158,14 +169,17 @@ class CNNLatentSpec(LatentSpec):
             encoders=encoders,
             obs_normalizers=normalizers,
             append_obs=append_obs,
+            append_obs_group=self.append_obs_group,
         )
 
     def get_latent_dim(self, model: nn.Module) -> int:
         """Return vector width plus the CNN width recorded while building the encoder."""
         dim = int(model.obs_dim) + self._cnn_latent_dim
-        if not self.concat_last_obs:
+        if not self.append_last_obs:
             return dim
-        return dim + resolve_obs_temporal_selector("policy", "last", model.obs_group_time_slice_map).dim
+        return dim + resolve_obs_temporal_selector(
+            self.append_obs_group, "last", model.obs_group_time_slice_map
+        ).dim
 
     def _make_encoder(self, model: nn.Module) -> nn.Sequential:
         """Build ``CNN -> optional projector`` and record the CNN latent width."""
@@ -189,22 +203,23 @@ class _CNNObsImageExport(nn.Module):
         self.encoders = adapter.encoders
         self.normalizers = adapter.obs_normalizers
         self.append_obs = adapter.append_obs
+        self.append_obs_group = adapter.append_obs_group
 
     def forward(self, obs: torch.Tensor, image: torch.Tensor) -> torch.Tensor:
         """Split packed ``obs`` back into 1D groups, then encode with the image."""
         tensors = dict(zip(self.vector_groups, obs.split(self.vector_dims, dim=-1)))
         tensors[self.image_obs_group] = image
         encoded = []
-        policy_obs = None
+        append_group_obs = None
         for group in self.obs_groups:
             x = self.normalizers[group](tensors[group])
             encoded.append(self.encoders[group](x))
-            if group == "policy":
-                policy_obs = x
+            if group == self.append_obs_group:
+                append_group_obs = x
         latent = torch.cat(encoded, dim=-1)
         if self.append_obs is None:
             return latent
-        return torch.cat([latent, self.append_obs.select(policy_obs)], dim=-1)
+        return torch.cat([latent, self.append_obs.select(append_group_obs)], dim=-1)
 
 
 class CNNModel(ComposableModel):

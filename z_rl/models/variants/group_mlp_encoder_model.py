@@ -4,9 +4,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import torch.nn as nn
+from tensordict import TensorDict
 
 from z_rl.models.composition import ComposableModel, GroupObsLatentAdapter, LatentSpec
 from z_rl.modules import EmpiricalNormalization, MLP
+from z_rl.utils import resolve_obs_temporal_selector
 
 
 @dataclass
@@ -14,6 +16,8 @@ class GroupMLPLatentSpec(LatentSpec):
     """Encode each active 1D observation group with its own MLP."""
 
     encoder_cfgs: dict[str, dict[str, Any]] = field(default_factory=dict)
+    append_last_obs: bool = False
+    append_obs_group: str = "policy"
     _latent_dim: int = field(init=False, repr=False, default=0)
 
     def validate(self, model: nn.Module) -> None:
@@ -32,6 +36,10 @@ class GroupMLPLatentSpec(LatentSpec):
                 )
             if "output_dim" not in self.encoder_cfgs[group]:
                 raise ValueError(f"Encoder config for '{group}' requires `output_dim`.")
+        if self.append_last_obs and self.append_obs_group not in model.obs_groups:
+            raise ValueError(
+                f"`GroupMLPLatentSpec.append_last_obs` requires a '{self.append_obs_group}' observation group."
+            )
 
     def build(self, model: nn.Module) -> nn.Module:
         encoders = {}
@@ -39,16 +47,30 @@ class GroupMLPLatentSpec(LatentSpec):
         group_dims = []
         self._latent_dim = 0
 
-        normalization_cfg = None
-        if model.obs_normalization is not False:
-            normalization_cfg = {} if model.obs_normalization is True else model.obs_normalization
+        def _normalization_kwargs(value: bool | dict[str, Any]) -> dict[str, Any] | None:
+            """Map a normalization switch to ``EmpiricalNormalization`` kwargs.
+
+            ``False`` disables normalization. ``True`` uses the module defaults. A dictionary is forwarded as kwargs.
+            """
+            if value is False:
+                return None
+            if value is True:
+                return {}
+            return value
+
+        default_normalization_cfg = _normalization_kwargs(model.obs_normalization)
 
         for group in model.obs_groups:
             input_dim = int(model.obs_group_shapes[group][-1])
             cfg = dict(self.encoder_cfgs[group])
+            if "obs_normalization" in cfg:
+                normalization_cfg = _normalization_kwargs(cfg.pop("obs_normalization"))
+            else:
+                normalization_cfg = default_normalization_cfg
             output_dim = int(cfg.pop("output_dim"))
             hidden_dims = cfg.pop("hidden_dims", ())
             activation = cfg.pop("activation", "swish")
+            layer_norm = cfg.pop("layer_norm", None)
             if cfg:
                 raise ValueError(f"Unsupported encoder configuration keys for '{group}': {list(cfg)}")
             if hidden_dims:
@@ -57,6 +79,7 @@ class GroupMLPLatentSpec(LatentSpec):
                     output_dim,
                     hidden_dims,
                     activation,
+                    layer_norm=layer_norm,
                     first_non_muon=True,
                     last_non_muon=True,
                 )
@@ -72,16 +95,26 @@ class GroupMLPLatentSpec(LatentSpec):
             group_dims.append(input_dim)
             self._latent_dim += output_dim
 
+        append_obs = None
+        if self.append_last_obs:
+            append_obs = resolve_obs_temporal_selector(
+                self.append_obs_group, "last", model.obs_group_time_slice_map
+            )
         return GroupObsLatentAdapter(
             obs_groups=list(model.obs_groups),
             obs_group_dims=group_dims,
             encoders=encoders,
             obs_normalizers=normalizers,
+            append_obs=append_obs,
+            append_obs_group=self.append_obs_group,
         )
 
     def get_latent_dim(self, model: nn.Module) -> int:
-        del model
-        return self._latent_dim
+        if not self.append_last_obs:
+            return self._latent_dim
+        return self._latent_dim + resolve_obs_temporal_selector(
+            self.append_obs_group, "last", model.obs_group_time_slice_map
+        ).dim
 
 
 class GroupMLPEncoderModel(ComposableModel):

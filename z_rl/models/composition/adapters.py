@@ -23,9 +23,9 @@ class ObsLatentAdapter(nn.Module):
     Runtime ``forward`` always receives a ``TensorDict``. ONNX export uses ``as_export_module()``,
     which receives the already-concatenated tensor.
 
-    ``append_obs`` is typically ``resolve_obs_temporal_selector("policy", "last", ...)``. It is
-    applied to the concatenated, normalized observation, then concatenated onto the encoded
-    latent. Requires a ``policy`` observation group when set.
+    ``append_obs`` is typically ``resolve_obs_temporal_selector(append_obs_group, "last", ...)``.
+    It is applied to the concatenated, normalized observation, then concatenated onto the encoded
+    latent. Requires ``append_obs_group`` to be one of ``obs_groups`` when set.
     """
 
     def __init__(
@@ -34,11 +34,13 @@ class ObsLatentAdapter(nn.Module):
         obs_normalizer: nn.Module,
         encoder: nn.Module | None = None,
         append_obs: ObsSelector | None = None,
+        append_obs_group: str = "policy",
     ) -> None:
         super().__init__()
         self.obs_groups = list(obs_groups)
-        if append_obs is not None and "policy" not in self.obs_groups:
-            raise ValueError("`append_obs` requires a 'policy' observation group.")
+        self.append_obs_group = append_obs_group
+        if append_obs is not None and append_obs_group not in self.obs_groups:
+            raise ValueError(f"`append_obs` requires a '{append_obs_group}' observation group.")
         self.obs_normalizer = obs_normalizer
         self._obs_normalizer_update = getattr(obs_normalizer, "update", None)
         self.encoder = nn.Identity() if encoder is None else encoder
@@ -75,9 +77,9 @@ class GroupObsLatentAdapter(nn.Module):
     which splits the concatenated tensor back into groups.
 
     ``append_obs`` matches ``ObsLatentAdapter``: typically
-    ``resolve_obs_temporal_selector("policy", "last", ...)``. It is applied to the normalized
-    ``policy`` group, then concatenated onto the encoded latent. Requires a ``policy``
-    observation group when set.
+    ``resolve_obs_temporal_selector(append_obs_group, "last", ...)``. It is applied to the
+    normalized ``append_obs_group``, then concatenated onto the encoded latent. Requires that
+    group to be one of ``obs_groups`` when set. ``append_obs_group`` defaults to ``policy``.
     """
 
     def __init__(
@@ -87,14 +89,16 @@ class GroupObsLatentAdapter(nn.Module):
         encoders: Mapping[str, nn.Module],
         obs_normalizers: Mapping[str, nn.Module],
         append_obs: ObsSelector | None = None,
+        append_obs_group: str = "policy",
     ) -> None:
         super().__init__()
         self.obs_groups = list(obs_groups)
         self.obs_group_dims = tuple(int(d) for d in obs_group_dims)
         if len(self.obs_group_dims) != len(self.obs_groups):
             raise ValueError("`obs_group_dims` must match `obs_groups`.")
-        if append_obs is not None and "policy" not in self.obs_groups:
-            raise ValueError("`append_obs` requires a 'policy' observation group.")
+        self.append_obs_group = append_obs_group
+        if append_obs is not None and append_obs_group not in self.obs_groups:
+            raise ValueError(f"`append_obs` requires a '{append_obs_group}' observation group.")
 
         self.encoders = _as_group_modules(encoders, self.obs_groups, "encoders")
         self.obs_normalizers = _as_group_modules(obs_normalizers, self.obs_groups, "obs_normalizers")
@@ -109,17 +113,17 @@ class GroupObsLatentAdapter(nn.Module):
         return self.encode_groups(obs)
 
     def encode_groups(self, obs: TensorDict) -> torch.Tensor:
-        encoded = []
-        policy_obs = None
+        encoded_latents: list[torch.Tensor] = []
+        append_group_obs = None
         for group in self.obs_groups:
-            x = self.obs_normalizers[group](obs[group])
-            encoded.append(self.encoders[group](x))
-            if group == "policy":
-                policy_obs = x
-        latent = torch.cat(encoded, dim=-1)
+            normalized = self.obs_normalizers[group](obs[group])
+            encoded_latents.append(self.encoders[group](normalized))
+            if self.append_obs is not None and group == self.append_obs_group:
+                append_group_obs = normalized
+        latent = torch.cat(encoded_latents, dim=-1)
         if self.append_obs is None:
             return latent
-        return torch.cat([latent, self.append_obs.select(policy_obs)], dim=-1)
+        return torch.cat([latent, self.append_obs.select(append_group_obs)], dim=-1)
 
     def update_normalization(self, obs: TensorDict) -> None:
         for group, update in self._obs_normalizer_updates:

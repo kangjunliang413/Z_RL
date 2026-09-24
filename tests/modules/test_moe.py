@@ -82,6 +82,35 @@ class TestMoERoutingMetrics:
 
 
 class TestMoEParallelExperts:
+    def test_top_k_all_matches_dense_routing(self) -> None:
+        dense = _make_moe(num_experts=4)
+        sparse = _make_moe(num_experts=4, top_k=4)
+        sparse.load_state_dict(dense.state_dict())
+        x = torch.randn(5, 8)
+
+        assert torch.allclose(dense(x), sparse(x), atol=1e-6)
+
+    def test_top_k_one_runs_only_selected_expert(self) -> None:
+        moe = _make_moe(num_experts=4, top_k=1)
+        x = torch.randn(5, 8)
+        output = moe(x)
+        selected = moe.last_gate_weights.argmax(dim=-1)
+        expected = moe.experts(x, selected.unsqueeze(-1)).squeeze(1)
+
+        assert torch.allclose(output, expected, atol=1e-6)
+        output.sum().backward()
+        for expert_index, weight in enumerate(moe.experts.weights):
+            if (selected == expert_index).any():
+                assert weight.grad is not None
+                assert weight.grad[expert_index].abs().sum() > 0
+            else:
+                assert weight.grad is not None
+                assert weight.grad[expert_index].abs().sum() == 0
+
+    def test_top_k_must_be_in_expert_range(self) -> None:
+        with pytest.raises(ValueError, match="top_k"):
+            _make_moe(num_experts=4, top_k=5)
+
     def test_mlp_gate_is_accepted(self) -> None:
         moe = _make_moe(gate_hidden_dims=[8])
         assert moe(torch.randn(2, 8)).shape == (2, 3)

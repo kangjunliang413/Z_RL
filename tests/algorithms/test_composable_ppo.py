@@ -50,6 +50,16 @@ class _DummyLossSpec(PPOLossSpec):
         return {"aux_loss": torch.tensor(2.0)}, {"aux_metric": torch.tensor(3.0)}
 
 
+class _ContextLossSpec(PPOLossSpec):
+    def validate(self, algo: object) -> None:
+        del algo
+
+    def compute(self, algo: object, minibatch: RolloutStorage.Batch):
+        del minibatch
+        latent = algo.actor_forward_context["latent"]  # type: ignore[attr-defined]
+        return {"aux_loss": latent.square().mean()}, {}
+
+
 class TestComposablePPO:
     def test_requires_loss_spec(self) -> None:
         obs = make_obs(NUM_ENVS, OBS_DIM)
@@ -175,3 +185,31 @@ class TestComposablePPO:
         algo.compute_loss(minibatch)
 
         assert algo.forward_actor_for_update_called
+
+    def test_update_actor_forward_exposes_reusable_latent_context(self) -> None:
+        obs = make_obs(NUM_ENVS, OBS_DIM)
+        obs_groups = {"actor": ["policy"], "critic": ["policy"]}
+        actor = _make_actor(obs, obs_groups)
+        critic = _make_critic(obs, obs_groups)
+        storage = RolloutStorage("rl", NUM_ENVS, NUM_STEPS, obs, [NUM_ACTIONS])
+        algo = ComposablePPO(actor, critic, storage, loss_spec=_ContextLossSpec())
+
+        transition = RolloutStorage.Transition()
+        transition.observations = obs
+        transition.hidden_states = (None, None)
+        transition.actions = actor(obs, stochastic_output=True).detach()
+        transition.values = critic(obs).detach()
+        transition.actions_log_prob = actor.get_output_log_prob(transition.actions).detach()
+        transition.distribution_params = tuple(p.detach() for p in actor.distribution.params)
+        transition.rewards = torch.ones(NUM_ENVS)
+        transition.dones = torch.zeros(NUM_ENVS)
+        storage.add_transition(transition)
+        algo.compute_returns(obs)
+
+        minibatch = next(storage.mini_batch_generator(num_mini_batches=1, num_epochs=1))
+        opt_losses, extra_losses = algo.compute_loss(minibatch)
+
+        assert "aux_loss" not in extra_losses
+        assert "aux_loss" in opt_losses
+        assert algo.actor_forward_context is not None
+        assert algo.actor_forward_context["latent"].shape[0] == minibatch.observations.batch_size[0]

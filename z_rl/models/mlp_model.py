@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import copy
+from typing import Literal
+
 import torch
 import torch.nn as nn
 from tensordict import TensorDict
@@ -42,6 +44,7 @@ class MLPModel(nn.Module):
         output_dim: int,
         hidden_dims: tuple[int, ...] | list[int] = (256, 256, 256),
         activation: str = "elu",
+        layer_norm: Literal["pre_activation", "post_activation"] | None = None,
         obs_normalization: ObservationNormalizationConfig = False,
         distribution_cfg: dict | None = None,
         obs_group_time_slice_map: dict[str, dict[str, ObsSelector]] | None = None,
@@ -56,6 +59,7 @@ class MLPModel(nn.Module):
             output_dim: Dimension of the output.
             hidden_dims: Hidden dimensions of the MLP.
             activation: Activation function of the MLP.
+            layer_norm: LayerNorm position in each hidden layer of the default MLP head. None disables it.
             obs_normalization: False disables normalization, True uses its defaults, and a dictionary configures
                 ``EmpiricalNormalization``.
             distribution_cfg: Configuration dictionary for the output distribution. If provided, the model outputs
@@ -88,6 +92,7 @@ class MLPModel(nn.Module):
         self.obs_group_time_slice_map = obs_group_time_slice_map or {}
         self.obs_format = obs_format or {}
         self.obs_normalization = obs_normalization
+        self.layer_norm = layer_norm
         if not hasattr(self, "latent_dim"):
             self.latent_dim = self.obs_dim
 
@@ -121,19 +126,37 @@ class MLPModel(nn.Module):
             was provided) and defaults to ``False``, meaning that even stochastic models will return deterministic
             outputs by default.
         """
+        output, _ = self.forward_with_context(obs, masks, hidden_state, stochastic_output)
+        return output
+
+    def forward_with_context(
+        self,
+        obs: TensorDict,
+        masks: torch.Tensor | None = None,
+        hidden_state: HiddenState = None,
+        stochastic_output: bool = False,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor] | None]:
+        """Run a forward pass and return the model output with optional intermediates.
+
+        Returns:
+            output: Model output. A sample when a distribution is configured and ``stochastic_output`` is true;
+                the deterministic distribution output when a distribution is configured and ``stochastic_output`` is
+                false; the raw head output when no distribution is configured.
+            context: Intermediate tensors reused by update-time losses, including the latent passed to the head.
+        """
         # If observations are padded for recurrent training but the model is non-recurrent, unpad the observations
         obs = unpad_trajectories(obs, masks) if masks is not None and not self.is_recurrent else obs
         # Get MLP input latent
         latent = self.get_latent(obs, masks, hidden_state)
         # MLP forward pass
         mlp_output = self.head(latent)
-        # If stochastic output is requested, update the distribution and sample from it, otherwise return MLP output
+        context = {"latent": latent}
         if self.distribution is not None:
             if stochastic_output:
                 self.distribution.update(mlp_output)
-                return self.distribution.sample()
-            return self.distribution.deterministic_output(mlp_output)
-        return mlp_output
+                return self.distribution.sample(), context
+            return self.distribution.deterministic_output(mlp_output), context
+        return mlp_output, context
 
     def get_latent(
         self, obs: TensorDict, masks: torch.Tensor | None = None, hidden_state: HiddenState = None
@@ -208,7 +231,15 @@ class MLPModel(nn.Module):
         This is a simple MLP network.
         """
         # When use_muon=True, hidden layers use Muon; input/output linear layers stay on AdamW.
-        return MLP(input_dim, output_dim, hidden_dims, activation, first_non_muon=True, last_non_muon=True)
+        return MLP(
+            input_dim,
+            output_dim,
+            hidden_dims,
+            activation,
+            layer_norm=self.layer_norm,
+            first_non_muon=True,
+            last_non_muon=True,
+        )
 
 
 """

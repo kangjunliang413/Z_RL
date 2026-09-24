@@ -243,6 +243,7 @@ class PPO:
 
             # Gradient step
             self.gradient_step(opt_loss)
+            self.actor_forward_context = None
 
         # Divide the losses by the number of updates
         num_updates = self.num_learning_epochs * self.num_mini_batches
@@ -363,7 +364,7 @@ class PPO:
         the base PPO loss computation unchanged.
         """
         self.actor_forward_context = None
-        self.actor(
+        _, self.actor_forward_context = self.actor.forward_with_context(
             minibatch.observations,
             masks=minibatch.masks,
             hidden_state=minibatch.hidden_states[0],

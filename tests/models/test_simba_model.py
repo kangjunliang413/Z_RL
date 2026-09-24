@@ -7,10 +7,11 @@ import tempfile
 import onnx
 import pytest
 import torch
+import torch.nn as nn
 from tensordict import TensorDict
 
 from z_rl.models import ComposableModel, GroupMLPEncoderModel, SimBaModel
-from z_rl.modules import SimBa
+from z_rl.modules import EmpiricalNormalization, SimBa
 
 NUM_ENVS = 4
 
@@ -32,6 +33,27 @@ ENCODER_CFGS = {
 
 
 class TestGroupMLPLatentSpec:
+    def test_layer_norm_is_configured_per_encoder(self) -> None:
+        model = GroupMLPEncoderModel(
+            _make_obs(),
+            {"actor": ["proprio", "object"]},
+            "actor",
+            2,
+            hidden_dims=[8],
+            encoder_cfgs={
+                "proprio": {"output_dim": 5, "hidden_dims": [8], "layer_norm": "post_activation"},
+                "object": {"output_dim": 3, "hidden_dims": [8]},
+            },
+        )
+
+        assert [type(layer) for layer in model.latent_adapter.encoders["proprio"]] == [
+            nn.Linear,
+            nn.SiLU,
+            nn.LayerNorm,
+            nn.Linear,
+        ]
+        assert not any(isinstance(layer, nn.LayerNorm) for layer in model.latent_adapter.encoders["object"])
+
     def test_uses_independent_group_widths(self) -> None:
         obs = _make_obs()
         model = GroupMLPEncoderModel(
@@ -50,6 +72,90 @@ class TestGroupMLPLatentSpec:
         assert latent.shape == (NUM_ENVS, 8)
         assert torch.allclose(latent, model.latent_adapter.as_export_module()(packed))
         assert set(model.latent_adapter.obs_normalizers) == {"proprio", "object"}
+
+    def test_group_obs_normalization_overrides_model_default(self) -> None:
+        obs = TensorDict(
+            {
+                "proprio": torch.ones(NUM_ENVS, 6) * 2,
+                "object": torch.ones(NUM_ENVS, 4) * 10,
+            },
+            batch_size=[NUM_ENVS],
+        )
+        encoder_cfgs = {
+            "proprio": {"output_dim": 5, "hidden_dims": [8], "obs_normalization": False},
+            "object": {
+                "output_dim": 3,
+                "hidden_dims": [],
+                "obs_normalization": {"stats_shape": (1,), "eps": 1.0e-4},
+            },
+        }
+        model = GroupMLPEncoderModel(
+            obs,
+            {"actor": ["proprio", "object"]},
+            "actor",
+            2,
+            hidden_dims=[8],
+            encoder_cfgs=encoder_cfgs,
+            obs_normalization=True,
+        )
+
+        proprio_normalizer = model.latent_adapter.obs_normalizers["proprio"]
+        object_normalizer = model.latent_adapter.obs_normalizers["object"]
+        assert isinstance(proprio_normalizer, nn.Identity)
+        assert isinstance(object_normalizer, EmpiricalNormalization)
+        assert tuple(object_normalizer.stats_shape) == (1,)
+        assert object_normalizer.eps == 1.0e-4
+        assert "obs_normalization" in encoder_cfgs["proprio"]
+
+        model.train()
+        model.latent_adapter.update_normalization(obs)
+        assert object_normalizer.count == NUM_ENVS
+        assert torch.allclose(object_normalizer.mean, torch.tensor(10.0))
+        assert torch.allclose(proprio_normalizer(obs["proprio"]), obs["proprio"])
+
+    def test_append_last_obs_appends_configured_group(self) -> None:
+        obs = TensorDict(
+            {
+                "proprio": torch.arange(NUM_ENVS * 8, dtype=torch.float32).view(NUM_ENVS, 8),
+                "object": torch.ones(NUM_ENVS, 4),
+            },
+            batch_size=[NUM_ENVS],
+        )
+        model = GroupMLPEncoderModel(
+            obs,
+            {"actor": ["proprio", "object"]},
+            "actor",
+            2,
+            hidden_dims=[8],
+            encoder_cfgs={
+                "proprio": {"output_dim": 5, "hidden_dims": [8]},
+                "object": {"output_dim": 3, "hidden_dims": []},
+            },
+            append_last_obs=True,
+            append_obs_group="proprio",
+            obs_group_time_slice_map={"proprio": {"last": slice(6, 8)}},
+        )
+
+        latent = model.get_latent(obs)
+
+        assert model.latent_dim == 10
+        assert latent.shape == (NUM_ENVS, 10)
+        assert torch.allclose(latent[:, -2:], obs["proprio"][:, 6:8])
+        exported = model.latent_adapter.as_export_module()(torch.cat([obs["proprio"], obs["object"]], dim=-1))
+        assert torch.allclose(exported, latent)
+
+    def test_append_last_obs_requires_configured_group(self) -> None:
+        obs = _make_obs()
+        with pytest.raises(ValueError, match="requires a 'policy' observation group"):
+            GroupMLPEncoderModel(
+                obs,
+                {"actor": ["proprio", "object"]},
+                "actor",
+                2,
+                hidden_dims=[8],
+                encoder_cfgs=ENCODER_CFGS,
+                append_last_obs=True,
+            )
 
     def test_requires_every_active_group(self) -> None:
         obs = _make_obs()

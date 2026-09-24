@@ -74,7 +74,7 @@ class TestCNNLatentSpec:
                 cnn_cfg=CNN_CFG,
             )
 
-    def test_concat_last_obs_appends_last_policy_frame(self) -> None:
+    def test_append_last_obs_appends_last_policy_frame(self) -> None:
         obs = _make_cnn_obs()
         obs["policy"] = torch.arange(NUM_ENVS * OBS_DIM, dtype=torch.float32).view(NUM_ENVS, OBS_DIM)
         model = CNNModel(
@@ -85,7 +85,7 @@ class TestCNNLatentSpec:
             hidden_dims=[16],
             image_obs_group="image",
             cnn_cfg=CNN_CFG,
-            concat_last_obs=True,
+            append_last_obs=True,
             obs_group_time_slice_map={"policy": {"last": slice(6, 8)}},
         )
         latent = model.get_latent(obs)
@@ -94,7 +94,34 @@ class TestCNNLatentSpec:
         assert torch.allclose(latent[:, -2:], obs["policy"][:, 6:8])
         assert model.latent_adapter.append_obs is not None
 
-    def test_concat_last_obs_requires_policy_group(self) -> None:
+    def test_append_last_obs_uses_configured_group(self) -> None:
+        obs = TensorDict(
+            {
+                "prop": torch.arange(NUM_ENVS * OBS_DIM, dtype=torch.float32).view(NUM_ENVS, OBS_DIM),
+                "image": torch.randn(NUM_ENVS, IMG_C, IMG_H, IMG_W),
+            },
+            batch_size=[NUM_ENVS],
+        )
+        model = CNNModel(
+            obs,
+            {"actor": ["prop", "image"]},
+            "actor",
+            NUM_ACTIONS,
+            hidden_dims=[16],
+            image_obs_group="image",
+            cnn_cfg=CNN_CFG,
+            append_last_obs=True,
+            append_obs_group="prop",
+            obs_group_time_slice_map={"prop": {"last": slice(6, 8)}},
+        )
+        latent = model.get_latent(obs)
+        assert latent.shape == (NUM_ENVS, OBS_DIM + _cnn_output_dim() + 2)
+        assert torch.allclose(latent[:, -2:], obs["prop"][:, 6:8])
+        assert model.latent_adapter.append_obs_group == "prop"
+        exported = model.latent_adapter.as_export_module()(obs["prop"], obs["image"])
+        assert torch.allclose(exported, latent)
+
+    def test_append_last_obs_requires_policy_group(self) -> None:
         obs = TensorDict(
             {
                 "prop": torch.randn(NUM_ENVS, OBS_DIM),
@@ -111,7 +138,7 @@ class TestCNNLatentSpec:
                 hidden_dims=[16],
                 image_obs_group="image",
                 cnn_cfg=CNN_CFG,
-                concat_last_obs=True,
+                append_last_obs=True,
                 obs_group_time_slice_map={"policy": {"last": slice(6, 8)}},
             )
 

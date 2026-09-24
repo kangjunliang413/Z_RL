@@ -52,6 +52,9 @@ class ZRlMLPModelCfg:
     activation: str = MISSING
     """The activation function for the MLP network."""
 
+    layer_norm: Literal["pre_activation", "post_activation"] | None = None
+    """LayerNorm position in each hidden layer of the default MLP head. None disables it."""
+
     obs_normalization: bool | ZRlEmpiricalNormalizationCfg = False
     """Observation normalization switch or advanced settings. Defaults to False."""
 
@@ -146,15 +149,30 @@ class ZRlGroupMLPEncoderModelCfg(ZRlComposableModelCfg):
                 "output_dim": 128,
                 "hidden_dims": [256],
                 "activation": "elu",
+                "layer_norm": "pre_activation",
+                "obs_normalization": False,
             },
             "object": {
                 "output_dim": 64,
                 "hidden_dims": [128],
+                "obs_normalization": {"stats_shape": (1,), "eps": 1.0e-2},
             },
         }
 
     Every active observation group must be configured with an ``output_dim``.
+    Optional keys are ``hidden_dims``, ``activation``, ``layer_norm``, and ``obs_normalization``.
+    Per-group ``layer_norm`` accepts ``None``, ``"pre_activation"``, or ``"post_activation"``
+    for the encoder's hidden layers; it is independent of the model-level MLP head setting.
+    A group's ``obs_normalization`` overrides the model-level setting for that group only:
+    ``False`` disables it, ``True`` uses the default empirical normalizer, and a dictionary
+    configures that group's ``EmpiricalNormalization``. Omitting the key keeps the model-level setting.
     """
+
+    append_last_obs: bool = False
+    """Whether to concatenate the last observation frame of ``append_obs_group`` to the encoded latent."""
+
+    append_obs_group: str = "policy"
+    """Observation group whose last frame is appended when ``append_last_obs`` is enabled."""
 
 
 @configclass
@@ -237,8 +255,11 @@ class ZRlMLPEncoderModelCfg(ZRlMLPModelCfg):
     encoder_activation: str = "elu"
     """The activation function for the encoder MLP. Defaults to elu."""
 
-    concat_last_obs: bool = False
+    append_last_obs: bool = False
     """Whether to concatenate the last observation frame to the encoder latent. Defaults to False."""
+
+    append_obs_group: str = "policy"
+    """Observation group whose last frame is appended when ``append_last_obs`` is enabled."""
 
 
 @configclass
@@ -306,8 +327,11 @@ class ZRlCNNModelCfg(ZRlMLPModelCfg):
     cnn_init_weights: bool = False
     """Optional do Kaiming initialization to cnns."""
 
-    concat_last_obs: bool = False
-    """Whether to concatenate the last policy observation frame to the encoded latent. Defaults to False."""
+    append_last_obs: bool = False
+    """Whether to concatenate the last observation frame of ``append_obs_group`` to the encoded latent."""
+
+    append_obs_group: str = "policy"
+    """Observation group whose last frame is appended when ``append_last_obs`` is enabled."""
 
 
 ############################

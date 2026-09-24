@@ -82,6 +82,19 @@ class TestMLPModelModes:
 class TestMLPModelNormalization:
     """Tests for observation normalization integration."""
 
+    def test_layer_norm_configures_hidden_layers(self) -> None:
+        model, _ = _make_mlp_model(layer_norm="pre_activation")
+
+        assert [type(layer) for layer in model.head] == [
+            nn.Linear,
+            nn.LayerNorm,
+            nn.ELU,
+            nn.Linear,
+            nn.LayerNorm,
+            nn.ELU,
+            nn.Linear,
+        ]
+
     def test_normalization_changes_output(self) -> None:
         """A model with obs_normalization should produce different outputs after normalization stats update."""
         model, obs = _make_mlp_model(stochastic=False, obs_set="critic", obs_normalization=True)
@@ -187,7 +200,7 @@ class TestEncoderSpec:
             hidden_dims=[8],
             encoder_latent_dim=5,
             encoder_hidden_dims=[7],
-            concat_last_obs=True,
+            append_last_obs=True,
             obs_group_time_slice_map=time_slice_map,
         )
 
@@ -198,6 +211,23 @@ class TestEncoderSpec:
         assert latent.shape == (2, 7)
         assert torch.allclose(latent[:, :5], encoded)
         assert torch.allclose(latent[:, 5:], obs["policy"][:, 6:8])
+
+    def test_encoder_append_obs_group_must_exist(self) -> None:
+        """append_last_obs should reject an append group that is not the active policy group."""
+        obs = TensorDict({"policy": torch.ones(2, 8)}, batch_size=[2])
+
+        with pytest.raises(ValueError, match="exactly one active observation group named 'prop'"):
+            MLPEncoderModel(
+                obs,
+                {"actor": ["policy"]},
+                "actor",
+                1,
+                hidden_dims=[8],
+                encoder_latent_dim=4,
+                encoder_hidden_dims=[6],
+                append_last_obs=True,
+                append_obs_group="prop",
+            )
 
     def test_encoder_requires_policy_only_obs_group(self) -> None:
         """Encoder specs should reject non-policy or multi-group observation sets."""
@@ -290,7 +320,7 @@ class TestMLPModelExport:
             },
             encoder_latent_dim=6,
             encoder_hidden_dims=[12],
-            concat_last_obs=True,
+            append_last_obs=True,
             obs_group_time_slice_map={"policy": {"last": slice(6, 8)}},
         )
         model.eval()
@@ -387,6 +417,25 @@ class TestGroupObsLatentAdapter:
         assert torch.allclose(latent[:, :8], obs["policy"])
         assert torch.allclose(latent[:, 8:12], obs["scan"])
         assert torch.allclose(latent[:, 12:], obs["policy"][:, 6:8])
+
+    def test_append_obs_uses_configured_group(self) -> None:
+        obs = TensorDict(
+            {"prop": torch.arange(16, dtype=torch.float32).view(2, 8), "scan": torch.ones(2, 4)},
+            batch_size=[2],
+        )
+        adapter = GroupObsLatentAdapter(
+            obs_groups=["prop", "scan"],
+            obs_group_dims=(8, 4),
+            encoders={"prop": nn.Identity(), "scan": nn.Identity()},
+            obs_normalizers={"prop": nn.Identity(), "scan": nn.Identity()},
+            append_obs=ObsSelector(slice(6, 8)),
+            append_obs_group="prop",
+        )
+        latent = adapter(obs)
+        assert adapter.append_obs_group == "prop"
+        assert torch.allclose(latent[:, 12:], obs["prop"][:, 6:8])
+        exported = adapter.as_export_module()(torch.cat([obs["prop"], obs["scan"]], dim=-1))
+        assert torch.allclose(exported, latent)
 
     def test_encoders_must_cover_every_group(self) -> None:
         with pytest.raises(ValueError, match="encoders"):

@@ -28,6 +28,7 @@ class MoEHeadSpec(HeadSpec):
     num_experts: int = 4
     expert_hidden_dims: tuple[int, ...] | list[int] = (256,)
     gate_hidden_dims: tuple[int, ...] | list[int] | None = None
+    top_k: int | None = None
 
     def validate(self, model: nn.Module) -> None:
         """Validate MoE-specific parameters before the head is rebuilt."""
@@ -45,6 +46,7 @@ class MoEHeadSpec(HeadSpec):
             self.expert_hidden_dims,
             gate_hidden_dims=self.gate_hidden_dims,
             activation=activation,
+            top_k=self.top_k,
         )
 
 

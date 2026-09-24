@@ -22,21 +22,27 @@ class MLPEncoderLatentSpec(LatentSpec):
     encoder_latent_dim: int = 128
     encoder_hidden_dims: tuple[int, ...] | list[int] = (256,)
     encoder_activation: str = "elu"
-    concat_last_obs: bool = False
+    append_last_obs: bool = False
+    append_obs_group: str = "policy"
 
     def validate(self, model: nn.Module) -> None:
-        """Require exactly one active observation group named ``policy``."""
-        if getattr(model, "obs_groups", None) != ["policy"]:
+        if getattr(model, "obs_groups", None) != [self.append_obs_group]:
             raise ValueError(
-                "`MLPEncoderLatentSpec` requires exactly one active observation group named 'policy'. "
+                f"`MLPEncoderLatentSpec` requires exactly one active observation group named '{self.append_obs_group}'. "
                 f"Got {getattr(model, 'obs_groups', None)}."
+            )
+        if self.append_last_obs and self.append_obs_group not in model.obs_groups:
+            raise ValueError(
+                f"`MLPEncoderLatentSpec.append_last_obs` requires a '{self.append_obs_group}' observation group."
             )
 
     def build(self, model: nn.Module) -> nn.Module:
         append_obs = None
-        # whether to append the last observation of the policy group
-        if self.concat_last_obs:
-            append_obs = resolve_obs_temporal_selector("policy", "last", model.obs_group_time_slice_map)
+        # whether to append the last observation of append_obs_group
+        if self.append_last_obs:
+            append_obs = resolve_obs_temporal_selector(
+                self.append_obs_group, "last", model.obs_group_time_slice_map
+            )
         # build obs normalizers
         if model.obs_normalization is False:
             obs_normalizer: nn.Module = nn.Identity()
@@ -49,13 +55,14 @@ class MLPEncoderLatentSpec(LatentSpec):
             obs_normalizer=obs_normalizer,
             encoder=MLP(model.obs_dim, self.encoder_latent_dim, self.encoder_hidden_dims, self.encoder_activation),
             append_obs=append_obs,
+            append_obs_group=self.append_obs_group,
         )
 
     def get_latent_dim(self, model: nn.Module) -> int:
-        if not self.concat_last_obs:
+        if not self.append_last_obs:
             return self.encoder_latent_dim
         return self.encoder_latent_dim + resolve_obs_temporal_selector(
-            "policy", "last", model.obs_group_time_slice_map
+            self.append_obs_group, "last", model.obs_group_time_slice_map
         ).dim
 
 

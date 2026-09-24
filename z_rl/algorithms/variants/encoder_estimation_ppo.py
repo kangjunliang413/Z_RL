@@ -56,10 +56,10 @@ class EncoderEstimationLossSpec(PPOLossSpec):
 
     def compute(self, algo: object, minibatch: RolloutStorage.Batch):
         """MSE between the selected actor latent slice and the critic observation target."""
-        actor = algo.actor  # type: ignore[attr-defined]
         obs = minibatch.observations
         target = self.target_obs_selector.select(obs[self.target_obs_group_name])
-        prediction = actor.get_latent(obs)[..., : target.shape[-1]]
+        latent = algo.actor_forward_context["latent"]  # type: ignore[attr-defined]
+        prediction = latent[..., : target.shape[-1]]
         return {"estimation_loss": F.mse_loss(prediction, target)}, {}
 
 
