@@ -252,6 +252,8 @@ class PPO:
         if mirror_loss_metric is not None:
             mean_losses["mirror_loss_detach"] = mirror_loss_metric
 
+        mean_losses["test_values"] = self.compute_test_values()
+
         with torch.no_grad():
             values = self.storage.values.flatten()
             returns = self.storage.returns.flatten()
@@ -270,6 +272,33 @@ class PPO:
         self._update_iteration += 1
 
         return mean_losses
+
+    @torch.no_grad()
+    def compute_test_values(self) -> torch.Tensor:
+        """Compute the rollout-mean advantage-weighted change in action log probability."""
+        test_values = []  # List of tensors, each with shape [4096, 1].
+        device = torch.device(self.device)
+        rng_devices = [device] if device.type == "cuda" else []
+        with torch.random.fork_rng(devices=rng_devices):
+            for step in range(self.storage.num_transitions_per_env):
+                # 同一个 step 下的 obs、action、旧 log prob 和 advantage 一一对应。
+                obs_step = self.storage.observations[step]  # [4096].
+                action_step = self.storage.actions[step]  # [4096, 12].
+                old_log_prob_step = self.storage.actions_log_prob[step]  # [4096, 1].
+                advantage_step = self.storage.advantages[step]  # [4096, 1].
+
+                # 利用 actor 对当前 obs 做一次前向传播，得到当前 obs 对应的动作分布，供后续计算 log prob。
+                self.actor(obs_step, stochastic_output=True)
+
+                # 利用当前策略的分布，计算 rollout 时保存的 action 对应的 log prob。
+                new_log_prob_step = self.actor.get_output_log_prob(action_step).unsqueeze(-1)  # [4096, 1].
+
+                test_values.append(  # Each appended tensor has shape [4096, 1].
+                    (new_log_prob_step - old_log_prob_step) * advantage_step
+                )
+
+        test_tensor = torch.stack(test_values, dim=0)  # [24, 4096, 1].
+        return test_tensor.mean()  
 
     def compute_loss(self, minibatch: RolloutStorage.Batch) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
         original_batch_size = minibatch.observations.batch_size[0]
