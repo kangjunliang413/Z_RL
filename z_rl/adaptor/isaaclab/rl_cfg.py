@@ -560,7 +560,7 @@ class ZRlBaseRunnerCfg:
     ``{time-stamp}_{run_name}``.
     """
 
-    logger: Literal["tensorboard", "neptune", "wandb"] | dict = "tensorboard"
+    logger: Literal["tensorboard", "neptune", "wandb", "swanlab", "comet", "trackio"] | dict = "tensorboard"
     """The logger to use. Defaults to tensorboard. Dict configs may specify a custom LogWriter."""
 
     neptune_project: str = "isaaclab"
@@ -568,6 +568,15 @@ class ZRlBaseRunnerCfg:
 
     wandb_project: str = "isaaclab"
     """The wandb project name. Defaults to "isaaclab"."""
+
+    swanlab_project: str = "isaaclab"
+    """The swanlab project name. Defaults to "isaaclab"."""
+
+    comet_project: str = "isaaclab"
+    """The Comet project name. Defaults to "isaaclab"."""
+
+    trackio_project: str = "isaaclab"
+    """The Trackio project name. Defaults to "isaaclab"."""
 
     resume: bool = False
     """Whether to resume a previous training. Defaults to False.
@@ -604,5 +613,10 @@ class ZRlOnPolicyRunnerCfg(ZRlBaseRunnerCfg):
     algorithm: ZRlPpoAlgorithmCfg = MISSING
     """The algorithm configuration."""
 
-    check_nan: bool = False
-    """Whether to check for NaN values during training. Defaults to False."""
+    torch_compile_mode: str | None = None
+    """Optional torch.compile mode for the actor and critic networks.
+
+    ``None`` (default) disables compilation. Supported values are ``"default"`` and
+    ``"max-autotune-no-cudagraphs"``. The CUDA-graph modes (``"reduce-overhead"`` and
+    ``"max-autotune"``) are not compatible with the multi-model PPO forward pattern.
+    """

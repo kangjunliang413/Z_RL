@@ -5,7 +5,7 @@
 
 """Helper functions."""
 
-from .log_writer import LogWriter
+from .log_writers import CometLogWriter, LogWriter, NeptuneLogWriter, SwanLabLogWriter, TrackioLogWriter, WandbLogWriter
 from .utils import (
     ObsSelector,
     resolve_obs_temporal_selector,
@@ -28,21 +28,12 @@ from .utils import (
 )
 
 
-def __getattr__(name: str):
-    """Lazily import optional logging integrations."""
-    if name == "WandbLogWriter":
-        from .wandb_utils import WandbLogWriter
-
-        return WandbLogWriter
-    if name == "NeptuneLogWriter":
-        from .neptune_utils import NeptuneLogWriter
-
-        return NeptuneLogWriter
-    raise AttributeError(f"module 'z_rl.utils' has no attribute {name!r}")
-
 __all__ = [
+    "CometLogWriter",
     "LogWriter",
     "NeptuneLogWriter",
+    "SwanLabLogWriter",
+    "TrackioLogWriter",
     "WandbLogWriter",
     "ObsSelector",
     "resolve_obs_temporal_selector",

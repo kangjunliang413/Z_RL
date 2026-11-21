@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "z_rl"
-version = "0.1.0"
+version = "0.2.0"
 keywords = ["reinforcement-learning", "robotics"]
 maintainers = [
   { name="Siyuan Wang", email="syw@mail.sustech.edu.cn" },
@@ -37,6 +37,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# trackio = ["trackio"]
+# comet = ["comet-ml"]
 muon = [
     "torch>=2.9",
 ]
@@ -56,6 +58,7 @@ include = ["z_rl*", "adaptor*"]
 [tool.setuptools]
 license-files = [
     "LICENSE*",
+    "THIRD_PARTY_NOTICES.md",
     "licenses/dependencies/*.txt",
 ]
 

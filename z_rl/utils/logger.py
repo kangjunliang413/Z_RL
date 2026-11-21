@@ -16,8 +16,19 @@ import warnings
 from collections import deque
 
 import z_rl
-from z_rl.utils.log_writer import LogWriter
+from z_rl.utils.log_writers import LogWriter
 from z_rl.utils.utils import resolve_callable, resolve_class
+
+# Plain-string logger names kept for old configs. Dict configs pass class_name directly.
+_LOGGER_ALIASES = {
+    "trackio": ("TrackioLogWriter", "trackio_project"),
+    "comet": ("CometLogWriter", "comet_project"),
+    "neptune": ("NeptuneLogWriter", "neptune_project"),
+    "wandb": ("WandbLogWriter", "wandb_project"),
+    "swanlab": ("SwanLabLogWriter", "swanlab_project"),
+}
+# These writers use one step axis, so wall-clock series are omitted.
+_ITERATION_STEP_LOGGERS = {"WandbLogWriter", "SwanLabLogWriter", "CometLogWriter", "TrackioLogWriter"}
 
 
 class Logger:
@@ -49,6 +60,8 @@ class Logger:
 
         # Create buffers
         self.ep_extras = []
+        self._deferred_episodes = []
+        self._deferred_extras = {}
         self.rewbuffer = deque(maxlen=100)
         self.lenbuffer = deque(maxlen=100)
         self.cur_reward_sum = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
@@ -64,28 +77,17 @@ class Logger:
             logger_cfg = self.cfg.get("logger", "tensorboard")
             self.logger_type = logger_cfg["class_name"] if isinstance(logger_cfg, dict) else logger_cfg.lower()
 
-            if self.logger_type == "neptune":
+            if self.logger_type in _LOGGER_ALIASES:
+                class_name, project_key = _LOGGER_ALIASES[self.logger_type]
                 warnings.warn(
-                    "cfg['logger'] = 'neptune' is deprecated. "
-                    "Use {'class_name': 'NeptuneLogWriter', 'project_name': ...} instead.",
+                    f"cfg['logger'] = {self.logger_type!r} is deprecated. "
+                    f"Use {{'class_name': {class_name!r}, 'project_name': ...}} instead.",
                     DeprecationWarning,
                     stacklevel=2,
                 )
-                from z_rl.utils.neptune_utils import NeptuneLogWriter
-
-                self.logger_type = "NeptuneLogWriter"
-                self.writer = NeptuneLogWriter(log_dir=self.log_dir, project_name=self.cfg.get("neptune_project"))
-            elif self.logger_type == "wandb":
-                warnings.warn(
-                    "cfg['logger'] = 'wandb' is deprecated. "
-                    "Use {'class_name': 'WandbLogWriter', 'project_name': ...} instead.",
-                    DeprecationWarning,
-                    stacklevel=2,
-                )
-                from z_rl.utils.wandb_utils import WandbLogWriter
-
-                self.logger_type = "WandbLogWriter"
-                self.writer = WandbLogWriter(log_dir=self.log_dir, project_name=self.cfg.get("wandb_project"))
+                writer_class = resolve_callable(class_name)
+                self.logger_type = class_name
+                self.writer = writer_class(log_dir=self.log_dir, project_name=self.cfg.get(project_key))
             elif self.logger_type == "tensorboard":
                 from torch.utils.tensorboard import SummaryWriter
 
@@ -116,30 +118,77 @@ class Logger:
         extras: dict,
     ) -> None:
         """Add metrics from the environment step to the buffers."""
+        if self.writer is not None and self.cfg.get("defer_env_logs", False):
+            self._defer_env_step(rewards, dones, extras)
+            return
         if self.writer is not None:
             # Update rewards and episode length
             self.cur_reward_sum += rewards
             self.cur_episode_length += 1
 
-            # Clear data for completed episodes
-            new_ids = (dones > 0).nonzero(as_tuple=False)
-            self.rewbuffer.extend(self.cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist())
-            self.lenbuffer.extend(self.cur_episode_length[new_ids][:, 0].cpu().numpy().tolist())
-            self.cur_reward_sum[new_ids] = 0
-            self.cur_episode_length[new_ids] = 0
+            # Clear data for completed episodes — use a boolean mask to avoid the
+            # CPU sync from (dones > 0).nonzero() on every step.
+            done_mask = dones.squeeze(-1) > 0
+            if torch.any(done_mask):
+                self.rewbuffer.extend(self.cur_reward_sum[done_mask].cpu().numpy().tolist())
+                self.lenbuffer.extend(self.cur_episode_length[done_mask].cpu().numpy().tolist())
+                self.cur_reward_sum[done_mask] = 0
+                self.cur_episode_length[done_mask] = 0
 
-            # Deferred env logs reuse new_ids instead of synchronizing once in the adaptor.
+            # Deferred env logs reuse done_mask instead of synchronizing once in the adaptor.
             ep_info = extras.get("episode", extras.get("log"))
             log_on_done = bool(extras.get("log_on_done"))
-            if ep_info is not None and (not log_on_done or new_ids.numel() > 0):
+            any_done = done_mask.any()
+            if ep_info is not None and (not log_on_done or any_done):
                 if log_on_done:
-                    env_ids = new_ids[:, 0]
+                    env_ids = done_mask.nonzero(as_tuple=False)[:, 0]
                     scales = extras.get("log_scale", {})
                     ep_info = {
                         key: value.index_select(0, env_ids.to(value.device)).detach().reshape(-1) * scales.get(key, 1.0)
                         for key, value in ep_info.items()
                     }
                 self.ep_extras.append(ep_info)
+
+    def _defer_env_step(self, rewards, dones, extras):
+        self.cur_reward_sum += rewards
+        self.cur_episode_length += 1
+        done = dones.squeeze(-1) > 0
+        self._deferred_episodes.append(torch.stack((self.cur_reward_sum, self.cur_episode_length, done)))
+        self.cur_reward_sum.mul_(~done)
+        self.cur_episode_length.mul_(~done)
+        ep_info = extras.get("episode", extras.get("log", {}))
+        if extras.get("log_on_done") and ep_info:
+            # All deferred manager metrics have one scalar per environment. Reduce
+            # them together instead of launching reductions separately for each key.
+            keys = tuple(ep_info)
+            if not hasattr(self, "_deferred_scales"):
+                self._deferred_scales = torch.tensor([extras.get("log_scale", {}).get(key, 1.0) for key in keys], device=self.device)
+            values = torch.stack([value.detach().reshape(self.num_envs) for value in ep_info.values()])
+            total = (values * done).sum(-1) * self._deferred_scales
+            count = done.sum().expand_as(total)
+            if keys not in self._deferred_extras:
+                self._deferred_extras[keys] = torch.zeros((len(keys), 2), device=self.device)
+            self._deferred_extras[keys].add_(torch.stack((total, count), -1))
+        else:
+            for key, value in ep_info.items():
+                value = torch.as_tensor(value, device=self.device).detach()
+                if (key,) not in self._deferred_extras:
+                    self._deferred_extras[(key,)] = torch.zeros((1, 2), device=self.device)
+                self._deferred_extras[(key,)].add_(torch.stack((value.sum(), value.new_tensor(value.numel()))))
+
+    def _flush_env_steps(self):
+        if not self._deferred_episodes:
+            return
+        episodes = torch.stack(self._deferred_episodes).cpu()
+        completed = episodes[:, 2].bool()
+        self.rewbuffer.extend(episodes[:, 0][completed].tolist())
+        self.lenbuffer.extend(episodes[:, 1][completed].tolist())
+        if self._deferred_extras:
+            keys = [key for group in self._deferred_extras for key in group]
+            totals = torch.cat(list(self._deferred_extras.values())).cpu()
+            self.ep_extras.append({key: total / count for key, (total, count) in zip(keys, totals) if count > 0})
+        self._deferred_episodes.clear()
+        self._deferred_extras.clear()
 
     def log(
         self,
@@ -154,13 +203,16 @@ class Logger:
         print_minimal: bool = False,
         width: int = 80,
         pad: int = 40,
+        collection_size: int | None = None,
     ) -> None:
         """Log the training metrics to the logging service and print them to the console.
 
-        If videos are available, they are uploaded to the logging service (W&B) as well.
+        If videos are available, they are uploaded to the logging service as well.
         """
+        self._flush_env_steps()
         if self.writer is not None:
-            collection_size = self.cfg["num_steps_per_env"] * self.num_envs * self.gpu_world_size
+            if collection_size is None:
+                collection_size = self.cfg["num_steps_per_env"] * self.num_envs * self.gpu_world_size
             iteration_time = collect_time + learn_time
             self.tot_timesteps += collection_size
             self.tot_time += iteration_time
@@ -209,7 +261,7 @@ class Logger:
             if len(self.rewbuffer) > 0:
                 self.writer.add_scalar("Train/mean_reward", statistics.mean(self.rewbuffer), it)
                 self.writer.add_scalar("Train/mean_episode_length", statistics.mean(self.lenbuffer), it)
-                if self.logger_type != "WandbLogWriter":
+                if self.logger_type not in _ITERATION_STEP_LOGGERS:
                     self.writer.add_scalar(
                         "Train/mean_reward/time", statistics.mean(self.rewbuffer), int(self.tot_time)
                     )

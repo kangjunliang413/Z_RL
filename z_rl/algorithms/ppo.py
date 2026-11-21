@@ -25,9 +25,9 @@ from z_rl.utils import (
     resolve_callable,
     resolve_class,
     resolve_obs_groups,
-    resolve_optimizer,
 )
-from z_rl.utils.opt import MuonAdamWWrapper
+from z_rl.utils.checkpoint import model_checkpoint_entries
+from z_rl.utils.opt import build_optimizer
 
 
 class PPO:
@@ -91,7 +91,10 @@ class PPO:
         if symmetry_augmentation and symmetry_cfg is None:
             raise ValueError("symmetry_augmentation requires an environment-backed symmetry config.")
         if symmetry_cfg is not None and (actor.is_recurrent or critic.is_recurrent):
-            raise ValueError("Symmetry augmentation is not supported for recurrent policies.")
+            raise ValueError(
+                "Symmetry augmentation is not supported for recurrent policies: "
+                "the hidden state has no explicit symmetry transform."
+            )
         self.symmetry = (
             Symmetry(batch_is_augmented=symmetry_augmentation, **symmetry_cfg) if symmetry_cfg is not None else None
         )
@@ -110,16 +113,14 @@ class PPO:
         self._raw_actor = self.actor
         self._raw_critic = self.critic
 
-        # Create the optimizer. Muon is not a full-model optimizer: hidden 2-D weights use Muon,
-        # while biases, std parameters, and input/output layers stay on AdamW via MuonAdamWWrapper.
-        if use_muon:
-            self.optimizer = MuonAdamWWrapper(
-                [self.actor, self.critic], lr=learning_rate, weight_decay=muon_adamw_weight_decay
-            )
-        else:
-            self.optimizer = resolve_optimizer(optimizer)(
-                chain(self.actor.parameters(), self.critic.parameters()), lr=learning_rate
-            )  # type: ignore
+        # Hidden 2-D weights use Muon when use_muon=True; biases, std, and input/output layers stay on AdamW.
+        self.optimizer = build_optimizer(
+            [self.actor, self.critic],
+            learning_rate=learning_rate,
+            optimizer=optimizer,
+            use_muon=use_muon,
+            muon_adamw_weight_decay=muon_adamw_weight_decay,
+        )
 
         # Add storage
         self.storage = storage
@@ -185,7 +186,8 @@ class PPO:
         critic_hidden_state = self.critic.get_hidden_state()
         last_values = self.critic(obs).detach()
         self.critic.reset(hidden_state=critic_hidden_state)
-        # Compute returns and advantages
+
+        # GAE: iterate backwards over timesteps.
         advantage = 0
         for step in reversed(range(st.num_transitions_per_env)):
             # If we are at the last step, bootstrap the return value
@@ -198,6 +200,7 @@ class PPO:
             advantage = delta + next_is_not_terminal * self.gamma * self.lam * advantage
             # Return: R_t = A(s_t, a_t) + V(s_t)
             st.returns[step] = advantage + st.values[step]
+
         # Compute the advantages
         st.advantages = st.returns - st.values
         # Normalize the advantages if per minibatch normalization is not used
@@ -409,9 +412,10 @@ class PPO:
         if self.is_multi_gpu:
             self.reduce_parameters()
 
-        # Apply the gradients for PPO
-        nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
-        nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
+        # Apply the gradients for PPO — clip actor+critic jointly in one call
+        nn.utils.clip_grad_norm_(
+            list(self.actor.parameters()) + list(self.critic.parameters()), self.max_grad_norm
+        )
         self.optimizer.step()
 
     def train_mode(self) -> None:
@@ -427,8 +431,8 @@ class PPO:
     def save(self) -> dict:
         """Return a dict of all models for saving."""
         saved_dict = {
-            "actor_state_dict": self._raw_actor.state_dict(),
-            "critic_state_dict": self._raw_critic.state_dict(),
+            **model_checkpoint_entries("actor", self._raw_actor),
+            **model_checkpoint_entries("critic", self._raw_critic),
             "optimizer_state_dict": self.optimizer.state_dict(),
         }
         return saved_dict
