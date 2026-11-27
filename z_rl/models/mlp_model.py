@@ -182,9 +182,9 @@ class MLPModel(nn.Module):
         return self.distribution.mean
 
     @property
-    def output_std(self) -> torch.Tensor:
-        """Return the standard deviation of the current output distribution."""
-        return self.distribution.std
+    def output_std(self) -> torch.Tensor | None:
+        """Return the output standard deviation, or None if no distribution is configured."""
+        return None if self.distribution is None else self.distribution.std
 
     @property
     def output_entropy(self) -> torch.Tensor:
@@ -247,7 +247,7 @@ class MLPModel(nn.Module):
         """Build the output head that consumes the model latent.
         This is a simple MLP network.
         """
-        # When use_muon=True, hidden layers use Muon; input/output linear layers stay on AdamW.
+        # Keep the input and output layers on AdamW when using Muon + AdamW.
         return MLP(
             input_dim,
             output_dim,
